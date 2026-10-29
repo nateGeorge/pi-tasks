@@ -29,7 +29,16 @@ const COMPOUND_STEP_PATTERNS = [
 const COMPOUND_CONJUNCTION =
 	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu;
 const SECOND_VERB_PATTERN =
-	/(?<![/\\._-])\b(?:add|analy[sz]e|apply|assess|build|bump|check|commit|compare|compute|create|delete|deploy|draft|edit|extract|fix|generate|implement|install|land|merge|move|open|publish|record|refactor|release|remove|rename|replace|reproduce|review|rewrite|run|ship|split|test|update|verify|wire|write|built|done|made|rebuilt|rewritten|set|written)\b|\b\w+(?:ed|ing)\b/iu;
+	/(?<![/\\._-])\b(?:add|analy[sz]e|apply|assess|build|bump|check|commit|compare|compute|create|delete|deploy|draft|edit|extract|fix|generate|implement|install|land|merge|move|open|publish|record|refactor|release|remove|rename|replace|reproduce|review|rewrite|run|ship|split|test|update|verify|wire|write)\b/iu;
+// A second action is an imperative verb that opens the clause after the conjunction.
+// "and update docs" is two actions; "and a test" names a thing, and "and where the value is
+// written" is a clause whose verb is a participle.
+const SECOND_ACTION_OPENER =
+	/^\s+(?:(?:then|also)\s+)?(?:the|a|an|its|their|your|this|that|where|which|so|but|if)\s+/iu;
+// A passive participle later in the clause still means a second outcome:
+// "Checkpoint written and index rebuilt" is two.
+const SECOND_PARTICIPLE_PATTERN =
+	/(?<![/\\._-])\b(?:written|rebuilt|built|done|made|updated|changed|added|removed|created|deleted|tested|verified|fixed|moved|renamed|replaced|extracted|generated|installed|merged|published|recorded|refactored|released|shipped|split|wired|applied|compared|computed|edited|copied|passed|failed)\b/iu;
 const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
@@ -747,8 +756,6 @@ function assessPlanQuality(step: {
 			`expected output uses vague or broad wording (${JSON.stringify(outputVagueMatch)}); name the file, symbol or observable value that proves it`,
 		);
 	}
-	if (step.allowedActions.length === 0)
-		issues.push("allowedActions are required");
 	if (step.allowedActions.length > 3)
 		issues.push("allowedActions are too broad; use at most three");
 	const actionVagueMatch = findPatternMatchInValues(
@@ -811,7 +818,12 @@ function findCompoundClause(value: string): string | undefined {
 	const match = COMPOUND_CONJUNCTION.exec(value);
 	if (!match) return undefined;
 	const rest = value.slice((match.index ?? 0) + match[0].length);
-	return SECOND_VERB_PATTERN.test(rest) ? match[0] : undefined;
+	// "and a test" names a thing, and "and where the value is written" opens a
+	// subordinate clause; neither is a second action.
+	if (SECOND_ACTION_OPENER.test(rest)) return undefined;
+	const opener = rest.trimStart().split(/[\s,;]/u)[0] ?? "";
+	if (SECOND_VERB_PATTERN.test(opener)) return match[0];
+	return SECOND_PARTICIPLE_PATTERN.test(rest) ? match[0] : undefined;
 }
 function findPatternMatch(
 	value: string,

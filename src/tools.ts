@@ -559,7 +559,7 @@ export function registerTaskTools(
 			"Use task_decompose when task_focus or task_granularity_check says the current step needs breakdown.",
 			"Smart models: preserve the parent objective and criteria; do not add unsolicited features or release gates.",
 			"Weak models: make each child one verb, one output, one evidence method, and copy criterionIds only from task_focus/task_resume.",
-			"Each child step must include expectedOutput, evidenceRequired, allowedActions, and granularityCheck.",
+			"Each child step must include expectedOutput, evidenceRequired, and granularityCheck; allowedActions is optional and an omitted list is treated as unconstrained.",
 			"Omit child step criterionIds or pass an empty array unless you are carrying forward known generated IDs from task_focus or task_resume; either form auto-links the parent criteria.",
 			"Only mark a child atomic when it truly has one action, one output, one verification method, and no hidden subtasks.",
 			"Do not use task_decompose for execution evidence; record execution evidence with task_evidence.",

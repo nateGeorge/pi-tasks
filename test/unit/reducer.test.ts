@@ -294,6 +294,52 @@ describe("task reducer", () => {
 		expect(state.tasks.T1.currentStep).toBe("Run package dry-run");
 	});
 
+	it("accepts a step whose clause after the conjunction names a thing", () => {
+		// Both wordings came from a real plan the gate rejected: "a test" and "where the
+		// block message is written" are not second actions.
+		for (const text of [
+			"Create bin/psafe with a redaction pass and a test",
+			"Read the guard rule for pgrep and where the block message is written",
+		]) {
+			const state = apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text,
+							expectedOutput: "src/reducer.ts holds the changed rule",
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: ["edit file"],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]);
+			expect(state.tasks.T1.planSteps).toHaveLength(1);
+		}
+	});
+
+	it("accepts a step that omits allowedActions", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "rename the pgrep rule in reducer.ts",
+						expectedOutput: "src/reducer.ts names the new rule",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps[0]?.allowedActions).toEqual([]);
+	});
+
 	it.each(["Run tests and update docs", "Run tests then update docs"])(
 		"rejects compound atomic step wording %j",
 		(text) => {
