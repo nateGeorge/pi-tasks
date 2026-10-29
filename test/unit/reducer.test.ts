@@ -325,18 +325,47 @@ describe("task reducer", () => {
 					...created(),
 					planSteps: [
 						{
-							text: "Fix ablate --out checkpoint writing in cli.py",
-							expectedOutput: "cli.py writes a sharded checkpoint directory",
+							text: "Update the relevant parts properly",
+							expectedOutput: "Everything works as expected now",
 							criterionIds: ["T1-AC1"],
 							evidenceRequired: true,
-							allowedActions: ["edit cli.py"],
+							allowedActions: ["edit source"],
 							decompositionStatus: "atomic",
 							granularityCheck: atomicCheck,
 						},
 					],
 				},
 			]),
-		).toThrow('step text uses vague or broad wording ("Fix")');
+		).toThrow('step text uses vague or broad wording ("Update")');
+	});
+
+	it("accepts a vague verb once the step names what changes", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "Fix the pgrep flag check to allow -f alone",
+						expectedOutput: "index.ts accepts a pid-only pgrep call",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit index.ts"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+					{
+						text: "Fix ablate --out checkpoint writing in cli.py",
+						expectedOutput: "cli.py writes a sharded checkpoint directory",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit cli.py"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps).toHaveLength(2);
 	});
 
 	it("rejects one compound output issue and names the matched token", () => {
@@ -347,7 +376,7 @@ describe("task reducer", () => {
 					planSteps: [
 						{
 							text: "Render checkpoint manifest",
-							expectedOutput: "Checkpoint and index written",
+							expectedOutput: "Checkpoint written and index rebuilt",
 							criterionIds: ["T1-AC1"],
 							evidenceRequired: true,
 							allowedActions: ["render checkpoint manifest"],
@@ -360,6 +389,26 @@ describe("task reducer", () => {
 		).toThrow('expected output appears to contain multiple outputs ("and")');
 	});
 
+	it("accepts a conjunction that joins nouns instead of actions", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "Extract symbols and line refs for every caller",
+						expectedOutput: "map.md lists the symbols and line refs",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["read src/index.ts"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps).toHaveLength(1);
+	});
+
 	it("reports quality failures from every invalid plan step", () => {
 		let caught: unknown;
 		try {
@@ -368,17 +417,17 @@ describe("task reducer", () => {
 					...created(),
 					planSteps: [
 						{
-							text: "Fix ablate --out checkpoint writing in cli.py",
-							expectedOutput: "cli.py writes a sharded checkpoint directory",
+							text: "Update the relevant parts properly",
+							expectedOutput: "Everything works as expected now",
 							criterionIds: ["T1-AC1"],
 							evidenceRequired: true,
-							allowedActions: ["edit cli.py"],
+							allowedActions: ["edit source"],
 							decompositionStatus: "atomic",
 							granularityCheck: atomicCheck,
 						},
 						{
 							text: "Render checkpoint manifest",
-							expectedOutput: "Checkpoint and index written",
+							expectedOutput: "Checkpoint written and index rebuilt",
 							criterionIds: ["T1-AC1"],
 							evidenceRequired: true,
 							allowedActions: ["render checkpoint manifest"],
@@ -395,7 +444,7 @@ describe("task reducer", () => {
 		expect(caught).toBeInstanceOf(TaskTransitionError);
 		const message = (caught as Error).message;
 		expect(message).toContain(
-			'Plan step 1 failed quality gate: step text uses vague or broad wording ("Fix")',
+			'Plan step 1 failed quality gate: step text uses vague or broad wording ("Update")',
 		);
 		expect(message).toContain(
 			'Plan step 2 failed quality gate: expected output appears to contain multiple outputs ("and")',

@@ -21,10 +21,15 @@ import {
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
 const MIN_NON_ATOMIC_PLAN_QUALITY_SCORE = 80;
 const COMPOUND_STEP_PATTERNS = [
-	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/[;&]/,
 	/(?<![/\\._-])(?:並且|然後|接著|以及|同時|再來)(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
 ];
+// A conjunction only means two actions when a second verb follows it. "Extract symbols and
+// line refs" is one action; "Run tests and update docs" is two.
+const COMPOUND_CONJUNCTION =
+	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu;
+const SECOND_VERB_PATTERN =
+	/(?<![/\\._-])\b(?:add|analy[sz]e|apply|assess|build|bump|check|commit|compare|compute|create|delete|deploy|draft|edit|extract|fix|generate|implement|install|land|merge|move|open|publish|record|refactor|release|remove|rename|replace|reproduce|review|rewrite|run|ship|split|test|update|verify|wire|write|built|done|made|rebuilt|rewritten|set|written)\b|\b\w+(?:ed|ing)\b/iu;
 const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
@@ -33,6 +38,18 @@ const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])優化(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
 	/(?<![/\\._-])弄好(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
 	/(?<![/\\._-])整理(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
+];
+// A vague verb is only vague when the step names nothing specific: no path, flag, code token or
+// symbol. "Fix the bug" stays rejected; "Fix the pgrep flag check to allow -f alone" is specific.
+const CONCRETE_ANCHORS = [
+	/[\w./-]*\.[a-z]{1,5}\b/i,
+	/\S\/\S/,
+	/--[a-z][\w-]+/i,
+	/(?<![\w-])-[a-z](?![\w-])/i,
+	/`[^`]+`/,
+	/[A-Za-z]\w*_\w*/,
+	/[a-z][A-Z]\w*/,
+	/\w+\(\)/,
 ];
 const VAGUE_EVIDENCE_PATTERNS = [
 	/\b(done|looks good|seems ok|probably|should work)\b/i,
@@ -716,18 +733,18 @@ function assessPlanQuality(step: {
 	if (step.expectedOutput.length < 12)
 		issues.push("expected output is too short");
 	const textVagueMatch = findPatternMatch(step.text, VAGUE_PLAN_PATTERNS);
-	if (textVagueMatch) {
+	if (textVagueMatch && !hasConcreteAnchor(step.text)) {
 		issues.push(
-			`step text uses vague or broad wording (${JSON.stringify(textVagueMatch)})`,
+			`step text uses vague or broad wording (${JSON.stringify(textVagueMatch)}); name the file, symbol, flag or code token that changes`,
 		);
 	}
 	const outputVagueMatch = findPatternMatch(
 		step.expectedOutput,
 		VAGUE_PLAN_PATTERNS,
 	);
-	if (outputVagueMatch) {
+	if (outputVagueMatch && !hasConcreteAnchor(step.expectedOutput)) {
 		issues.push(
-			`expected output uses vague or broad wording (${JSON.stringify(outputVagueMatch)})`,
+			`expected output uses vague or broad wording (${JSON.stringify(outputVagueMatch)}); name the file, symbol or observable value that proves it`,
 		);
 	}
 	if (step.allowedActions.length === 0)
@@ -743,16 +760,17 @@ function assessPlanQuality(step: {
 			`allowedActions contain vague actions (${JSON.stringify(actionVagueMatch)})`,
 		);
 	}
-	const textCompoundMatch = findPatternMatch(step.text, COMPOUND_STEP_PATTERNS);
+	const textCompoundMatch =
+		findPatternMatch(step.text, COMPOUND_STEP_PATTERNS) ??
+		findCompoundClause(step.text);
 	if (textCompoundMatch) {
 		issues.push(
 			`step text appears to contain multiple actions (${JSON.stringify(textCompoundMatch)})`,
 		);
 	}
-	const outputCompoundMatch = findPatternMatch(
-		step.expectedOutput,
-		COMPOUND_STEP_PATTERNS,
-	);
+	const outputCompoundMatch =
+		findPatternMatch(step.expectedOutput, COMPOUND_STEP_PATTERNS) ??
+		findCompoundClause(step.expectedOutput);
 	if (outputCompoundMatch) {
 		issues.push(
 			`expected output appears to contain multiple outputs (${JSON.stringify(outputCompoundMatch)})`,
@@ -786,6 +804,15 @@ function assessPlanQuality(step: {
 	};
 }
 
+function hasConcreteAnchor(value: string): boolean {
+	return CONCRETE_ANCHORS.some((pattern) => pattern.test(value));
+}
+function findCompoundClause(value: string): string | undefined {
+	const match = COMPOUND_CONJUNCTION.exec(value);
+	if (!match) return undefined;
+	const rest = value.slice((match.index ?? 0) + match[0].length);
+	return SECOND_VERB_PATTERN.test(rest) ? match[0] : undefined;
+}
 function findPatternMatch(
 	value: string,
 	patterns: readonly RegExp[],
