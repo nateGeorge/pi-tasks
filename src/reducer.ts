@@ -37,7 +37,7 @@ const COMPOUND_CONJUNCTION =
 const SECOND_VERB_PATTERN =
 	/(?<![/\\._-])\b(?:add|analy[sz]e|apply|assess|build|bump|check|commit|compare|compute|create|delete|deploy|draft|edit|extract|fix|generate|implement|install|land|merge|move|open|publish|record|refactor|release|remove|rename|replace|reproduce|review|rewrite|run|ship|split|test|update|verify|wire|write)\b/iu;
 const SECOND_COMMAND_PATTERN =
-	/^\s*(?:npm|npx|pnpm|yarn|bun|node|python(?:3)?|git|make|cargo|go)\b/iu;
+	/^\s*(?:npm|npx|pnpm|yarn|bun|node|python(?:3)?|git|make|cargo|go)(?=\s|$)/iu;
 // A second action is an imperative verb that opens the clause after the conjunction.
 // "and update docs" is two actions; "and a test" names a thing, and "and where the value is
 // written" is a clause whose verb is a participle.
@@ -328,12 +328,13 @@ function decomposeStep(
 	const activeStep = getCurrentOpenStep(task);
 	if (activeStep) {
 		task.currentStep = activeStep.text;
-		task.nextAction =
-			activeStep.decompositionStatus === "atomic"
-				? activeStep.text
-				: isAtMaximumDecompositionDepth(activeStep)
-					? `Block ${activeStep.id}; maximum decomposition depth reached`
-					: `Break down ${activeStep.id}`;
+		if (activeStep.decompositionStatus === "atomic") {
+			task.nextAction = activeStep.text;
+		} else if (isAtMaximumDecompositionDepth(activeStep)) {
+			task.nextAction = `Block ${activeStep.id}; maximum decomposition depth reached`;
+		} else {
+			task.nextAction = `Break down ${activeStep.id}`;
+		}
 	} else {
 		delete task.currentStep;
 		delete task.nextAction;

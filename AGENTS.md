@@ -73,6 +73,8 @@ This project must align with the commercial-quality bar established by `pi-knowl
 - Supplying `task_update.scope` requires non-empty `activity`; `scope_change` and `off_plan` also require `scope_reason`. Those reducer rejections must recover with a corrected snake_case `task_update`, not the task's unrelated next action.
 - Heuristic plan-quality checks for vague, broad, or compound wording never reject a plan: save the step and report one warning line naming each affected step. Structural errors still reject, including blank required fields, unknown criterion IDs, and schema errors. Treat complete path and command tokens as single units; dotted initialisms such as `U.S.`, `e.g.`, and `i.e.` are not file anchors, while one-letter extensions such as `.c`, `.h`, and `.R` and multi-dot filenames are valid anchors. Compound detection remains a small heuristic for clear imperative or passive-result clauses, not a refusal rule.
 - Rejected `task_plan` calls collect task- and step-level structural issues together. Return one complete corrected call only after validating it; preserve every valid submitted field, repair only invalid fields from the original objective, linked criteria, or same-step text/output, and do not repeat `minimum_params` beside the full retry payload.
+- When `task_plan` omits both `plan_steps` and `initial_steps`, derive a single corrected plan step from the valid objective and criteria; the first corrected call must succeed.
+- Compound-action checks recognize only complete runner command tokens, so file names such as `node.c` remain nouns; heuristic warnings never reject a saved plan.
 
 
 ## Verification Rules

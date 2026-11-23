@@ -242,6 +242,16 @@ describe("plan quality warnings and structural validation", () => {
 		expect(state.tasks.T1?.planSteps[0]?.text).toBe(text);
 	});
 
+	it("does not treat runner names inside file names as second commands", () => {
+		const text = "Compare parser.c and node.c";
+		const state = apply([{ ...created(), planSteps: [planStep({ text })] }]);
+		const step = state.tasks.T1?.planSteps[0];
+		expect(step?.text).toBe(text);
+		expect(step?.planQuality.issues).not.toContainEqual(
+			expect.stringContaining("step text appears to contain multiple actions"),
+		);
+	});
+
 	it("warns about sequential npm commands without rejecting the plan", () => {
 		const state = apply([
 			{
