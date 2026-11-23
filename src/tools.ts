@@ -976,12 +976,15 @@ function appendAndReport(
 		});
 		updateTaskUi(pi, ctx, state, "task_mutation");
 		onPersisted?.();
-		const warning =
-			event.type === "task.completed" && event.forceWithReason
-				? `\nWarning: forced completion: ${event.forceWithReason}`
-				: "";
+		const warnings = [
+			...(event.type === "task.completed" && event.forceWithReason
+				? [`Warning: forced completion: ${event.forceWithReason}`]
+				: []),
+			...planQualityWarnings(event, state),
+		];
+		const warningText = warnings.length ? `\n${warnings.join("\n")}` : "";
 		return textResult(
-			`${success}${warning}\n\n${formatTaskResume(state)}`,
+			`${success}${warningText}\n\n${formatTaskResume(state)}`,
 			buildTaskResume(state),
 		);
 	} catch (error) {
@@ -1019,6 +1022,27 @@ function appendAndReport(
 			isError: true,
 		};
 	}
+}
+
+function planQualityWarnings(event: TaskEvent, state: TaskState): string[] {
+	if (event.type !== "task.created" && event.type !== "task.steps_decomposed") {
+		return [];
+	}
+	const task = state.tasks[event.taskId];
+	if (!task) return [];
+	const affectedSteps =
+		event.type === "task.created"
+			? task.planSteps
+			: task.planSteps.filter(
+					(step) => step.parentStepId === event.parentStepId,
+				);
+	return affectedSteps.flatMap((step) =>
+		step.planQuality.issues.length > 0
+			? [
+					`Warning: plan step ${step.id} (${step.text}) saved with quality concerns: ${step.planQuality.issues.join("; ")}`,
+				]
+			: [],
+	);
 }
 
 function buildRejectionRecovery(

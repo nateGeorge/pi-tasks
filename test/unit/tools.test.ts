@@ -629,7 +629,44 @@ describe("registered task tools", () => {
 		);
 	});
 
-	it("does not consume task IDs for rejected task_plan calls", async () => {
+	it("saves heuristic plan issues and warns with the affected step", async () => {
+		const { tools, ctx, store } = createHarness();
+		const plan = requireTool(tools, "task_plan");
+		const result = await execute(
+			plan,
+			{
+				title: "Warn on plan heuristics",
+				objective: "Save a plan with a heuristic wording concern",
+				acceptance_criteria: ["The plan is saved with a warning"],
+				plan_steps: [
+					{
+						text: "Update the relevant parts properly",
+						expectedOutput: "The parser result is recorded",
+						evidenceRequired: true,
+						allowedActions: ["edit source"],
+						decompositionStatus: "atomic",
+						granularityCheck: {
+							isAtomic: true,
+							reason: "One code edit is verified with one test",
+							canBeDoneInOneAgentAction: true,
+							hasSingleObservableOutput: true,
+							hasSingleVerificationMethod: true,
+							hasNoHiddenSubtasks: true,
+						},
+					},
+				],
+			},
+			ctx,
+		);
+		const output = result.content[0]?.text ?? "";
+		expect(output).toContain("Created task T1");
+		expect(output).toContain("Warning: plan step T1-S1");
+		expect(
+			store.getState().tasks.T1?.planSteps[0]?.planQuality.issues.length,
+		).toBeGreaterThan(0);
+	});
+
+	it("does not consume task IDs for structurally rejected task_plan calls", async () => {
 		const { tools, ctx, store } = createHarness();
 		const plan = requireTool(tools, "task_plan");
 
@@ -641,8 +678,8 @@ describe("registered task tools", () => {
 				acceptance_criteria: ["Bad plan is rejected"],
 				plan_steps: [
 					{
-						text: "Do the thing",
-						expectedOutput: "Something happens",
+						text: " ",
+						expectedOutput: "A structurally valid output is present",
 						evidenceRequired: true,
 						decompositionStatus: "atomic",
 						granularityCheck: {

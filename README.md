@@ -15,7 +15,7 @@ Every other task tool for AI agents is just a todo list. pi-tasks enforces three
 | Contract | What it means |
 |----------|---------------|
 | **Evidence-gated completion** | Agents cannot mark work done without traceable, reproducible proof |
-| **Atomic step decomposition** | Vague or compound steps are rejected; non-atomic steps must be broken down before execution |
+| **Atomic step decomposition** | Vague or compound steps are saved with warnings; non-atomic steps must be broken down before execution |
 | **Compaction-safe resume** | Context window limits don't lose your progress — snapshot replay picks up exactly where you left off |
 
 Plus: ordered step execution, scope drift detection, weak-model recovery guidance, decision/blocker audit trails, and branch-aware persistence.
@@ -125,8 +125,8 @@ metadata.
 - Evidence fields expose the same limits enforced by the reducer: summaries 500 characters, observed output 1,000, and each reference/source/command 300. Retry templates preserve valid values and replace invalid over-limit values with explicit placeholders.
 - `task_update.scope` requires `activity`; `scope_change` and `off_plan` also require `scope_reason`. Missing fields return a targeted `task_update` recovery using the public snake_case parameter names.
 - Empty or omitted `criterionIds` on new and decomposed steps auto-link the available task criteria; non-empty arrays must contain known generated IDs.
-- Atomic plan-quality issues are hard failures. Wording failures name the matched fragment, and one rejection reports every invalid plan step so callers can correct the full plan in one retry.
-- Plan quality still rejects broad or compound actions, but action-like filename segments such as `fixtures/fix.json`, `update.json`, and `then.json` are treated as paths rather than instructions.
+- Heuristic plan-quality issues are warnings on saved steps; the plan result names each affected step and its concerns. Blank required fields, unknown criterion IDs, and schema errors still reject the plan.
+- Vague-anchor and compound-step checks are hints, not refusals. Dotted initialisms are ignored as file anchors, while one-letter extensions such as `.c`, `.h`, and `.R` remain valid anchors; action-like filename segments such as `fixtures/fix.json` do not count as instructions.
 
 
 ## Completion Gates
@@ -240,8 +240,7 @@ blockers, and evidence references; custom UI extensions should keep them local.
 - Pure reducer with transition validation and evidence-before-completion enforcement
 - Ordered plan steps; agents must complete or skip the current step before advancing
 - Step-level contracts with expected output, linked criteria, required evidence, and allowed actions
-- Plan quality gate rejects vague, unverifiable, or over-broad atomic steps
-- Stricter atomic scoring rejects compound wording (`and`, `then`, `並且`, `然後`)
+- Plan-quality checks warn on vague, unverifiable, over-broad, or compound wording without rejecting the saved plan
 - Recursive decomposition gate for non-atomic steps, with explicit blocker recovery at depth 4
 - Step-scoped evidence through `task_evidence.step_ids`
 - Current-step evidence lock unless explicit `override_reason` is supplied

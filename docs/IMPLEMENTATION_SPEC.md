@@ -274,9 +274,9 @@ Rules:
 - Structured `plan_steps` should provide expected output, linked criteria, evidence requirement, and allowed actions.
 - During new task creation, agents should omit `plan_steps.criterionIds` or pass an empty array unless generated criterion IDs are already known. Both forms link the step to all task criteria after IDs such as `T1-AC1` are generated; a non-empty array must contain only known IDs.
 - Structured `plan_steps` should also include a granularity check. A step is executable only when it is `atomic`.
-- Atomic steps must not bundle obvious sequential work. Every atomic plan-quality issue is a hard failure, including compound wording such as `and`, `then`, `also`, `並且`, `然後`, `接著`, `以及`, or `同時` in step text, expected output, or allowed actions. Wording failures include the exact matched fragment.
-- Action-like words adjacent to path punctuation are excluded from vague/compound matching, so filenames such as `fixtures/fix.json`, `update.json`, and `then.json` do not change an otherwise concrete step's quality score. The same words used as instructions, including before sentence punctuation, remain guarded.
-- Plan creation and decomposition validate every submitted step before rejecting the event and report all invalid step numbers in one error without persisting partial state.
+- Heuristic plan-quality findings such as vague wording, broad allowed actions, or compound wording are warnings, not refusals. A saved plan reports one warning line naming each affected step; only structural errors such as blank required fields, unknown criterion IDs, and schema errors reject the plan.
+- Action-like words inside path and command tokens are not treated as instructions. Dotted initialisms such as `U.S.`, `e.g.`, and `i.e.` are not file anchors; one-letter extensions such as `.c`, `.h`, and `.R` and multi-dot filenames are valid anchors.
+- Plan creation and decomposition validate the full event before persistence, so structural errors do not leave partial state.
 - The first step is active when the task is activated.
 - Agents must complete or skip the current open step before advancing.
 - Non-atomic steps must be recursively decomposed with `task_decompose` before they can be marked `done`. At maximum depth 4, every next-action surface instead directs the agent to block the task explicitly and carry remaining scope/evidence references into a manually planned flat successor.
@@ -285,7 +285,7 @@ Rules:
 - Decomposition replaces a parent step with ordered child steps such as `T1-S1.1` and preserves parent traceability through `parentStepId`.
 - Step evidence should be linked with `task_evidence.step_ids`; criterion-only evidence is auto-linked to a step only when exactly one step matches the criterion.
 - Step evidence is locked to the current open step. Attaching evidence to another step requires an explicit override reason.
-- Plan quality gate rejects steps with vague wording, weak expected output, broad allowed actions, missing criterion links, or non-evidence-gated atomic work.
+- Plan-quality checks record warnings for vague wording, weak expected output, broad allowed actions, missing criterion links, compound wording, or non-evidence-gated atomic work; these heuristic findings do not refuse persistence.
 
 ### 5.8 Task
 
@@ -953,7 +953,7 @@ As of 2026-10-14, the repo contains the implemented product for:
 - plan quality and evidence quality gates for weak-model resistance,
 - `task_next` one-step weak-model guidance,
 - structured rejection recovery details with retry tool and minimum params,
-- stricter atomic step scoring for compound wording without path-token false positives,
+- per-step warnings for heuristic plan-quality findings, with structural errors still rejected,
 - current-step evidence locking and schema-visible evidence text budgets,
 - recursive decomposition through depth 4 with a consistent explicit blocker recovery at the cap,
 - `task_focus` current-step guidance before action,

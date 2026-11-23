@@ -19,7 +19,6 @@ import {
 } from "./model.ts";
 
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
-const MIN_NON_ATOMIC_PLAN_QUALITY_SCORE = 80;
 // This short list favors few false refusals; only these explicit imperatives and their
 // participles can establish a compound step with high confidence.
 const COMPOUND_ACTIONS = [
@@ -53,7 +52,8 @@ const COMMAND_TOKEN =
 const PATH_TOKEN =
 	/(?<![\p{L}\p{N}_])[\w.-]+(?:[/\\][\w.-]+)+(?![\p{L}\p{N}_])/giu;
 const FILE_TOKEN =
-	/(?<![\p{L}\p{N}_])[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{2,}\b/giu;
+	/(?<![\p{L}\p{N}_])[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{1,}\b/giu;
+const DOTTED_INITIALISM = /^(?:[A-Za-z]\.)+[A-Za-z]$/u;
 const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
@@ -67,7 +67,6 @@ const VAGUE_PLAN_PATTERNS = [
 // symbol. "Fix the bug" stays rejected; "Fix the pgrep flag check to allow -f alone" is specific.
 const CONCRETE_ANCHORS = [
 	/(?<![\p{L}\p{N}_])[\w.-]+(?:[\\/][\w.-]+)+(?![\p{L}\p{N}_])/u,
-	/(?<![\p{L}\p{N}_])[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{2,}\b/u,
 	/--[a-z][\w-]+/i,
 	/(?<![\w-])-[a-z](?![\w-])/i,
 	/`[^`]+`/,
@@ -701,20 +700,7 @@ function createPlanStep(
 		decompositionStatus,
 		granularityCheck,
 	});
-	validateGranularityContract(
-		{
-			...step,
-			text,
-			expectedOutput,
-			criterionIds: linkedCriteria,
-			decompositionStatus,
-			granularityCheck,
-			planQuality,
-			allowedActions: step.allowedActions ?? [],
-			evidenceRequired: step.evidenceRequired ?? true,
-		},
-		index,
-	);
+	validateGranularityContract(granularityCheck, index);
 	const status =
 		index === 0 && (activate || options.parentStatus)
 			? (options.parentStatus ?? "active")
@@ -822,7 +808,13 @@ function assessPlanQuality(step: {
 }
 
 function hasConcreteAnchor(value: string): boolean {
-	return CONCRETE_ANCHORS.some((pattern) => pattern.test(value));
+	const hasFileAnchor = [...value.matchAll(FILE_TOKEN)].some(
+		([candidate]) =>
+			candidate !== undefined && !DOTTED_INITIALISM.test(candidate),
+	);
+	return (
+		hasFileAnchor || CONCRETE_ANCHORS.some((pattern) => pattern.test(value))
+	);
 }
 function findCompoundClause(value: string): string | undefined {
 	const normalized = value
@@ -897,28 +889,12 @@ function normalizeGranularityCheck(step: TaskStepInput): TaskGranularityCheck {
 }
 
 function validateGranularityContract(
-	step: TaskStepInput & {
-		decompositionStatus: TaskStep["decompositionStatus"];
-		granularityCheck: TaskGranularityCheck;
-		planQuality: PlanQuality;
-		criterionIds: string[];
-		allowedActions: string[];
-		evidenceRequired: boolean;
-	},
+	granularityCheck: TaskGranularityCheck,
 	index: number,
 ): void {
-	if (!step.granularityCheck.reason.trim()) {
+	if (!granularityCheck.reason.trim()) {
 		throw new TaskTransitionError(
 			`Plan step ${index + 1} granularityCheck.reason is required`,
-		);
-	}
-	const failsQualityGate =
-		step.decompositionStatus === "atomic"
-			? step.planQuality.issues.length > 0
-			: step.planQuality.score < MIN_NON_ATOMIC_PLAN_QUALITY_SCORE;
-	if (failsQualityGate) {
-		throw new TaskTransitionError(
-			`Plan step ${index + 1} failed quality gate: ${step.planQuality.issues.join("; ")}`,
 		);
 	}
 }
