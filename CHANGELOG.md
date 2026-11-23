@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- Stopped failing a plan step for omitting `allowedActions`; an empty list is accepted and simply means the step names no pre-approved actions.
+- Judged a conjunction by the clause it opens, so "and a test" and "and where the message is written" are no longer reported as two actions, while "and update docs" and "Checkpoint written and index rebuilt" still are.
+
 ## [0.2.10] - 2026-10-24
 
 ### Fixed

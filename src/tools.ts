@@ -559,7 +559,7 @@ export function registerTaskTools(
 			"Use task_decompose when task_focus or task_granularity_check says the current step needs breakdown.",
 			"Smart models: preserve the parent objective and criteria; do not add unsolicited features or release gates.",
 			"Weak models: make each child one verb, one output, one evidence method, and copy criterionIds only from task_focus/task_resume.",
-			"Each child step must include expectedOutput, evidenceRequired, allowedActions, and granularityCheck.",
+			"Each child step must include expectedOutput, evidenceRequired, and granularityCheck; allowedActions is optional and an omitted list is treated as unconstrained.",
 			"Omit child step criterionIds or pass an empty array unless you are carrying forward known generated IDs from task_focus or task_resume; either form auto-links the parent criteria.",
 			"Only mark a child atomic when it truly has one action, one output, one verification method, and no hidden subtasks.",
 			"Do not use task_decompose for execution evidence; record execution evidence with task_evidence.",
@@ -976,12 +976,15 @@ function appendAndReport(
 		});
 		updateTaskUi(pi, ctx, state, "task_mutation");
 		onPersisted?.();
-		const warning =
-			event.type === "task.completed" && event.forceWithReason
-				? `\nWarning: forced completion: ${event.forceWithReason}`
-				: "";
+		const warnings = [
+			...(event.type === "task.completed" && event.forceWithReason
+				? [`Warning: forced completion: ${event.forceWithReason}`]
+				: []),
+			...planQualityWarnings(event, state),
+		];
+		const warningText = warnings.length ? `\n${warnings.join("\n")}` : "";
 		return textResult(
-			`${success}${warning}\n\n${formatTaskResume(state)}`,
+			`${success}${warningText}\n\n${formatTaskResume(state)}`,
 			buildTaskResume(state),
 		);
 	} catch (error) {
@@ -1019,6 +1022,27 @@ function appendAndReport(
 			isError: true,
 		};
 	}
+}
+
+function planQualityWarnings(event: TaskEvent, state: TaskState): string[] {
+	if (event.type !== "task.created" && event.type !== "task.steps_decomposed") {
+		return [];
+	}
+	const task = state.tasks[event.taskId];
+	if (!task) return [];
+	const affectedSteps =
+		event.type === "task.created"
+			? task.planSteps
+			: task.planSteps.filter(
+					(step) => step.parentStepId === event.parentStepId,
+				);
+	return affectedSteps.flatMap((step) =>
+		step.planQuality.issues.length > 0
+			? [
+					`Warning: plan step ${step.id} (${step.text}) saved with quality concerns: ${step.planQuality.issues.join("; ")}`,
+				]
+			: [],
+	);
 }
 
 function buildRejectionRecovery(

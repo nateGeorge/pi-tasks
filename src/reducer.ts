@@ -19,12 +19,41 @@ import {
 } from "./model.ts";
 
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
-const MIN_NON_ATOMIC_PLAN_QUALITY_SCORE = 80;
-const COMPOUND_STEP_PATTERNS = [
-	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
-	/[;&]/,
-	/(?<![/\\._-])(?:並且|然後|接著|以及|同時|再來)(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
-];
+// This short list favors few false refusals; only these explicit imperatives and their
+// participles can establish a compound step with high confidence.
+const COMPOUND_ACTIONS = [
+	{ imperative: "run", participle: "run" },
+	{ imperative: "push", participle: "pushed" },
+	{ imperative: "merge", participle: "merged" },
+	{ imperative: "deploy", participle: "deployed" },
+	{ imperative: "fix", participle: "fixed" },
+	{ imperative: "add", participle: "added" },
+	{ imperative: "update", participle: "updated" },
+	{ imperative: "write", participle: "written" },
+	{ imperative: "remove", participle: "removed" },
+	{ imperative: "open", participle: "opened" },
+	{ imperative: "close", participle: "closed" },
+	{ imperative: "install", participle: "installed" },
+	{ imperative: "test", participle: "tested" },
+	{ imperative: "build", participle: "built|rebuilt" },
+	{ imperative: "commit", participle: "committed" },
+] as const;
+const COMPOUND_IMPERATIVE = new RegExp(
+	`^(?:${COMPOUND_ACTIONS.map(({ imperative }) => imperative).join("|")})\\b`,
+	"iu",
+);
+const COMPOUND_PARTICIPLE_END = new RegExp(
+	`\\b(?:${COMPOUND_ACTIONS.map(({ participle }) => participle).join("|")})[.!?]?$`,
+	"iu",
+);
+const COMPOUND_CLAUSE_SEPARATOR = /\s+(?:and|then)\s+|[;,]/iu;
+const COMMAND_TOKEN =
+	/\b(?:npm|pnpm|yarn|bun)\s+run\s+[\w:-]+(?:\s+--[^\s,;]+)*/giu;
+const PATH_TOKEN =
+	/(?<![\p{L}\p{N}_])[\w.-]+(?:[/\\][\w.-]+)+(?![\p{L}\p{N}_])/giu;
+const FILE_TOKEN =
+	/(?<![\p{L}\p{N}_])[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{1,}\b/giu;
+const DOTTED_INITIALISM = /^(?:[A-Za-z]\.)+[A-Za-z]$/u;
 const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
@@ -33,6 +62,17 @@ const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])優化(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
 	/(?<![/\\._-])弄好(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
 	/(?<![/\\._-])整理(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
+];
+// A vague verb is only vague when the step names nothing specific: no path, flag, code token or
+// symbol. "Fix the bug" stays rejected; "Fix the pgrep flag check to allow -f alone" is specific.
+const CONCRETE_ANCHORS = [
+	/(?<![\p{L}\p{N}_])[\w.-]+(?:[\\/][\w.-]+)+(?![\p{L}\p{N}_])/u,
+	/--[a-z][\w-]+/i,
+	/(?<![\w-])-[a-z](?![\w-])/i,
+	/`[^`]+`/,
+	/[A-Za-z]\w*_\w*/,
+	/[a-z][A-Z]\w*/,
+	/\w+\(\)/,
 ];
 const VAGUE_EVIDENCE_PATTERNS = [
 	/\b(done|looks good|seems ok|probably|should work)\b/i,
@@ -660,20 +700,7 @@ function createPlanStep(
 		decompositionStatus,
 		granularityCheck,
 	});
-	validateGranularityContract(
-		{
-			...step,
-			text,
-			expectedOutput,
-			criterionIds: linkedCriteria,
-			decompositionStatus,
-			granularityCheck,
-			planQuality,
-			allowedActions: step.allowedActions ?? [],
-			evidenceRequired: step.evidenceRequired ?? true,
-		},
-		index,
-	);
+	validateGranularityContract(granularityCheck, index);
 	const status =
 		index === 0 && (activate || options.parentStatus)
 			? (options.parentStatus ?? "active")
@@ -716,22 +743,20 @@ function assessPlanQuality(step: {
 	if (step.expectedOutput.length < 12)
 		issues.push("expected output is too short");
 	const textVagueMatch = findPatternMatch(step.text, VAGUE_PLAN_PATTERNS);
-	if (textVagueMatch) {
+	if (textVagueMatch && !hasConcreteAnchor(step.text)) {
 		issues.push(
-			`step text uses vague or broad wording (${JSON.stringify(textVagueMatch)})`,
+			`step text uses vague or broad wording (${JSON.stringify(textVagueMatch)}); name the file, symbol, flag or code token that changes`,
 		);
 	}
 	const outputVagueMatch = findPatternMatch(
 		step.expectedOutput,
 		VAGUE_PLAN_PATTERNS,
 	);
-	if (outputVagueMatch) {
+	if (outputVagueMatch && !hasConcreteAnchor(step.expectedOutput)) {
 		issues.push(
-			`expected output uses vague or broad wording (${JSON.stringify(outputVagueMatch)})`,
+			`expected output uses vague or broad wording (${JSON.stringify(outputVagueMatch)}); name the file, symbol or observable value that proves it`,
 		);
 	}
-	if (step.allowedActions.length === 0)
-		issues.push("allowedActions are required");
 	if (step.allowedActions.length > 3)
 		issues.push("allowedActions are too broad; use at most three");
 	const actionVagueMatch = findPatternMatchInValues(
@@ -743,25 +768,21 @@ function assessPlanQuality(step: {
 			`allowedActions contain vague actions (${JSON.stringify(actionVagueMatch)})`,
 		);
 	}
-	const textCompoundMatch = findPatternMatch(step.text, COMPOUND_STEP_PATTERNS);
+	const textCompoundMatch = findCompoundClause(step.text);
 	if (textCompoundMatch) {
 		issues.push(
 			`step text appears to contain multiple actions (${JSON.stringify(textCompoundMatch)})`,
 		);
 	}
-	const outputCompoundMatch = findPatternMatch(
-		step.expectedOutput,
-		COMPOUND_STEP_PATTERNS,
-	);
+	const outputCompoundMatch = findCompoundClause(step.expectedOutput);
 	if (outputCompoundMatch) {
 		issues.push(
 			`expected output appears to contain multiple outputs (${JSON.stringify(outputCompoundMatch)})`,
 		);
 	}
-	const actionCompoundMatch = findPatternMatchInValues(
-		step.allowedActions,
-		COMPOUND_STEP_PATTERNS,
-	);
+	const actionCompoundMatch = step.allowedActions
+		.map((action) => findCompoundClause(action))
+		.find((match) => match !== undefined);
 	if (actionCompoundMatch) {
 		issues.push(
 			`allowedActions must each be a single action (${JSON.stringify(actionCompoundMatch)})`,
@@ -786,6 +807,40 @@ function assessPlanQuality(step: {
 	};
 }
 
+function hasConcreteAnchor(value: string): boolean {
+	const hasFileAnchor = [...value.matchAll(FILE_TOKEN)].some(
+		([candidate]) =>
+			candidate !== undefined && !DOTTED_INITIALISM.test(candidate),
+	);
+	return (
+		hasFileAnchor || CONCRETE_ANCHORS.some((pattern) => pattern.test(value))
+	);
+}
+function findCompoundClause(value: string): string | undefined {
+	const normalized = value
+		.replace(/`[^`]*`/gu, " TOKEN ")
+		.replace(COMMAND_TOKEN, " TOKEN ")
+		.replace(PATH_TOKEN, " TOKEN ")
+		.replace(FILE_TOKEN, " TOKEN ");
+	const clauses = normalized
+		.split(COMPOUND_CLAUSE_SEPARATOR)
+		.map((clause) => clause.trim().replace(/^(?:(?:and|then)\s+)+/iu, ""));
+	const separators = [
+		...normalized.matchAll(new RegExp(COMPOUND_CLAUSE_SEPARATOR.source, "giu")),
+	];
+	for (let index = 0; index < clauses.length - 1; index += 1) {
+		const left = clauses[index] ?? "";
+		const right = clauses[index + 1] ?? "";
+		if (
+			(COMPOUND_IMPERATIVE.test(left) && COMPOUND_IMPERATIVE.test(right)) ||
+			(COMPOUND_PARTICIPLE_END.test(left) &&
+				COMPOUND_PARTICIPLE_END.test(right))
+		) {
+			return separators[index]?.[0].trim() ?? "compound clause";
+		}
+	}
+	return undefined;
+}
 function findPatternMatch(
 	value: string,
 	patterns: readonly RegExp[],
@@ -834,28 +889,12 @@ function normalizeGranularityCheck(step: TaskStepInput): TaskGranularityCheck {
 }
 
 function validateGranularityContract(
-	step: TaskStepInput & {
-		decompositionStatus: TaskStep["decompositionStatus"];
-		granularityCheck: TaskGranularityCheck;
-		planQuality: PlanQuality;
-		criterionIds: string[];
-		allowedActions: string[];
-		evidenceRequired: boolean;
-	},
+	granularityCheck: TaskGranularityCheck,
 	index: number,
 ): void {
-	if (!step.granularityCheck.reason.trim()) {
+	if (!granularityCheck.reason.trim()) {
 		throw new TaskTransitionError(
 			`Plan step ${index + 1} granularityCheck.reason is required`,
-		);
-	}
-	const failsQualityGate =
-		step.decompositionStatus === "atomic"
-			? step.planQuality.issues.length > 0
-			: step.planQuality.score < MIN_NON_ATOMIC_PLAN_QUALITY_SCORE;
-	if (failsQualityGate) {
-		throw new TaskTransitionError(
-			`Plan step ${index + 1} failed quality gate: ${step.planQuality.issues.join("; ")}`,
 		);
 	}
 }

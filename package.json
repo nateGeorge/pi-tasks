@@ -15,7 +15,7 @@
 	"homepage": "https://github.com/nczz/pi-tasks#readme",
 	"pi": {
 		"extensions": [
-			"./dist/index.js"
+			"./index.ts"
 		]
 	},
 	"publishConfig": {
@@ -23,6 +23,8 @@
 		"registry": "https://registry.npmjs.org/"
 	},
 	"files": [
+		"index.ts",
+		"src/",
 		"dist/",
 		"docs/",
 		"README.md",
@@ -47,6 +49,7 @@
 		"prepack": "npm run build",
 		"release:check": "scripts/release-check.sh",
 		"test": "vitest --run test/unit/",
+		"test:install-smoke": "node --experimental-strip-types test/install-smoke.ts",
 		"test:native": "vitest --run test/extension.test.ts",
 		"typecheck": "tsc --noEmit"
 	},

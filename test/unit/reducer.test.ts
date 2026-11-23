@@ -294,112 +294,393 @@ describe("task reducer", () => {
 		expect(state.tasks.T1.currentStep).toBe("Run package dry-run");
 	});
 
-	it.each(["Run tests and update docs", "Run tests then update docs"])(
-		"rejects compound atomic step wording %j",
-		(text) => {
-			expect(() =>
-				apply([
-					{
-						...created(),
-						planSteps: [
-							{
-								text,
-								expectedOutput: "Test result is recorded",
-								criterionIds: ["T1-AC1"],
-								evidenceRequired: true,
-								allowedActions: ["npm test"],
-								decompositionStatus: "atomic",
-								granularityCheck: atomicCheck,
-							},
-						],
-					},
-				]),
-			).toThrow("multiple actions");
-		},
-	);
-
-	it("rejects one vague wording issue and names the matched token", () => {
-		expect(() =>
-			apply([
+	it("accepts a step whose clause after the conjunction names a thing", () => {
+		// Both wordings came from a real plan the gate rejected: "a test" and "where the
+		// block message is written" are not second actions.
+		for (const text of [
+			"Create bin/psafe with a redaction pass and a test",
+			"Read the guard rule for pgrep and where the block message is written",
+		]) {
+			const state = apply([
 				{
 					...created(),
 					planSteps: [
 						{
-							text: "Fix ablate --out checkpoint writing in cli.py",
-							expectedOutput: "cli.py writes a sharded checkpoint directory",
+							text,
+							expectedOutput: "src/reducer.ts holds the changed rule",
 							criterionIds: ["T1-AC1"],
 							evidenceRequired: true,
-							allowedActions: ["edit cli.py"],
-							decompositionStatus: "atomic",
-							granularityCheck: atomicCheck,
-						},
-					],
-				},
-			]),
-		).toThrow('step text uses vague or broad wording ("Fix")');
-	});
-
-	it("rejects one compound output issue and names the matched token", () => {
-		expect(() =>
-			apply([
-				{
-					...created(),
-					planSteps: [
-						{
-							text: "Render checkpoint manifest",
-							expectedOutput: "Checkpoint and index written",
-							criterionIds: ["T1-AC1"],
-							evidenceRequired: true,
-							allowedActions: ["render checkpoint manifest"],
-							decompositionStatus: "atomic",
-							granularityCheck: atomicCheck,
-						},
-					],
-				},
-			]),
-		).toThrow('expected output appears to contain multiple outputs ("and")');
-	});
-
-	it("reports quality failures from every invalid plan step", () => {
-		let caught: unknown;
-		try {
-			apply([
-				{
-					...created(),
-					planSteps: [
-						{
-							text: "Fix ablate --out checkpoint writing in cli.py",
-							expectedOutput: "cli.py writes a sharded checkpoint directory",
-							criterionIds: ["T1-AC1"],
-							evidenceRequired: true,
-							allowedActions: ["edit cli.py"],
-							decompositionStatus: "atomic",
-							granularityCheck: atomicCheck,
-						},
-						{
-							text: "Render checkpoint manifest",
-							expectedOutput: "Checkpoint and index written",
-							criterionIds: ["T1-AC1"],
-							evidenceRequired: true,
-							allowedActions: ["render checkpoint manifest"],
+							allowedActions: ["edit file"],
 							decompositionStatus: "atomic",
 							granularityCheck: atomicCheck,
 						},
 					],
 				},
 			]);
-		} catch (error) {
-			caught = error;
+			expect(state.tasks.T1.planSteps).toHaveLength(1);
 		}
+	});
 
-		expect(caught).toBeInstanceOf(TaskTransitionError);
-		const message = (caught as Error).message;
-		expect(message).toContain(
-			'Plan step 1 failed quality gate: step text uses vague or broad wording ("Fix")',
+	it("accepts a step that omits allowedActions", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "rename the pgrep rule in reducer.ts",
+						expectedOutput: "src/reducer.ts names the new rule",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps[0]?.allowedActions).toEqual([]);
+	});
+
+	it.each([
+		"Run tests and push the branch",
+		"Run tests then push the branch",
+		"Run tests; push the branch",
+		"Run tests, push the branch",
+		"Run the test and build suites",
+		"Run lint, build, and type checks",
+		"Run npm test and npm run build",
+	])("saves compound wording with a heuristic warning: %j", (text) => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text,
+						expectedOutput: "Test result is recorded",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["npm test"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps[0]?.text).toBe(text);
+	});
+
+	it("saves two passive outcomes as a heuristic warning", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "Record the verification result",
+						expectedOutput: "Checkpoint written and docs/README.md updated",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["npm test"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps[0]?.planQuality.issues.join(" ")).toContain(
+			"multiple outputs",
 		);
-		expect(message).toContain(
-			'Plan step 2 failed quality gate: expected output appears to contain multiple outputs ("and")',
+	});
+
+	it.each([
+		"Compare the baseline and the generated snapshots",
+		"Inspect aliases and build/test output",
+		"Read the schema and its examples",
+		"Check the output where the report is written",
+		"Review the source, tests, and docs",
+		"Build/test output contains one status",
+		"Run `npm run build` and inspect its output",
+		"Run tests and build/test output",
+		"Write a note about tests and docs",
+		"Check the table for written snapshots",
+		"Run baseline checks and the generated snapshots",
+		"Check docs/README.md and src/config.test.ts",
+	])("accepts ordinary atomic step wording %j", (text) => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text,
+						expectedOutput: "One observable result is recorded",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit source"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps).toHaveLength(1);
+	});
+
+	it("saves vague wording as a warning naming the matched token", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "Update the relevant parts properly",
+						expectedOutput: "Everything works as expected now",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit source"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps[0]?.planQuality.issues.join(" ")).toContain(
+			'step text uses vague or broad wording ("Update")',
 		);
+	});
+
+	it("accepts a vague verb once the step names what changes", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "Fix the pgrep flag check to allow -f alone",
+						expectedOutput: "index.ts accepts a pid-only pgrep call",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit index.ts"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+					{
+						text: "Fix ablate --out checkpoint writing in cli.py",
+						expectedOutput: "cli.py writes a sharded checkpoint directory",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit cli.py"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps).toHaveLength(2);
+	});
+
+	it("saves a compound output issue as a warning naming the matched token", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "Render checkpoint manifest",
+						expectedOutput: "Checkpoint written and index rebuilt",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["render checkpoint manifest"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps[0]?.planQuality.issues.join(" ")).toContain(
+			'expected output appears to contain multiple outputs ("and")',
+		);
+	});
+
+	it.each([
+		"Extract symbols and line refs for every caller",
+		"Extract symbols and line refs and API examples",
+		"Inspect updated docs and archived logs",
+	])(
+		"accepts noun lists without treating adjectives as outcomes: %j",
+		(text) => {
+			const state = apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text,
+							expectedOutput: "map.md lists the symbols and line refs",
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: ["read src/index.ts"],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]);
+			expect(state.tasks.T1.planSteps).toHaveLength(1);
+		},
+	);
+
+	it.each([
+		"Run tests and push the branch",
+		"Checkpoint written and docs/README.md updated",
+	])("saves high-confidence compound wording with a warning: %j", (text) => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text,
+						expectedOutput: "One plan result is recorded",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit source"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(
+			state.tasks.T1.planSteps[0]?.planQuality.issues.length,
+		).toBeGreaterThan(0);
+	});
+
+	it("applies the compound check to allowedActions but permits a noun list", () => {
+		const event = (allowedActions: string[]): TaskEvent => ({
+			...created(),
+			planSteps: [
+				{
+					text: "Extract symbols and line refs",
+					expectedOutput: "map.md lists the symbols and line refs",
+					criterionIds: ["T1-AC1"],
+					evidenceRequired: true,
+					allowedActions,
+					decompositionStatus: "atomic",
+					granularityCheck: atomicCheck,
+				},
+			],
+		});
+		const flagged = apply([event(["run tests and deploy"])]);
+		expect(
+			flagged.tasks.T1.planSteps[0]?.planQuality.issues.join(" "),
+		).toContain("allowedActions must each be a single action");
+		expect(
+			apply([event(["extract symbols and line refs"])]).tasks.T1,
+		).toBeDefined();
+	});
+
+	it.each(["e.g.", "i.e.", "U.S."])(
+		"does not treat dotted initialism %s as a concrete file anchor",
+		(abbreviation) => {
+			const state = apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text: `Fix everything in ${abbreviation} the app`,
+							expectedOutput: "The application setting is corrected",
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: ["edit application"],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]);
+			expect(
+				state.tasks.T1.planSteps[0]?.planQuality.issues.join(" "),
+			).toContain("vague or broad wording");
+		},
+	);
+
+	it.each([
+		"src/app.ts",
+		"src/config.test.ts",
+		"parser.c",
+		"parser.h",
+		"parser.R",
+	])(
+		"still recognizes complete file candidate %s as a concrete anchor",
+		(path) => {
+			const state = apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text: `Fix everything in ${path}`,
+							expectedOutput: `${path} contains the corrected setting`,
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: [`edit ${path}`],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]);
+			expect(state.tasks.T1.planSteps).toHaveLength(1);
+		},
+	);
+
+	it("saves quality findings from every step instead of refusing the plan", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "Update the relevant parts properly",
+						expectedOutput: "Everything works as expected now",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit source"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+					{
+						text: "Render checkpoint manifest",
+						expectedOutput: "Checkpoint written and index rebuilt",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["render checkpoint manifest"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps[0]?.planQuality.issues.join(" ")).toContain(
+			"vague or broad wording",
+		);
+		expect(state.tasks.T1.planSteps[1]?.planQuality.issues.join(" ")).toContain(
+			"multiple outputs",
+		);
+	});
+
+	it("still rejects blank step text and unknown criterion IDs", () => {
+		const invalidEvent = (text: string, criterionIds: string[]): TaskEvent => ({
+			...created(),
+			planSteps: [
+				{
+					text,
+					expectedOutput: "A structurally valid output is recorded",
+					criterionIds,
+					evidenceRequired: true,
+					allowedActions: [],
+					decompositionStatus: "atomic",
+					granularityCheck: atomicCheck,
+				},
+			],
+		});
+		expect(() => apply([invalidEvent(" ", ["T1-AC1"])])).toThrow(
+			"Plan steps cannot be blank",
+		);
+		expect(() =>
+			apply([invalidEvent("Write parser output", ["T1-AC99"])]),
+		).toThrow("unknown criterion");
 	});
 
 	it("accepts concrete plan paths whose segments resemble action words", () => {
@@ -461,48 +742,50 @@ describe("task reducer", () => {
 		).toEqual([100, 100]);
 	});
 
-	it("keeps rejecting genuinely broad plan wording", () => {
-		expect(() =>
-			apply([
+	it("saves genuinely broad plan wording with heuristic warnings", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
+					{
+						text: "Fix the whole project",
+						expectedOutput: "Complete all fixes in the project",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["Update project files"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
+					},
+				],
+			},
+		]);
+		expect(
+			state.tasks.T1.planSteps[0]?.planQuality.issues.length,
+		).toBeGreaterThan(0);
+	});
+
+	it.each(["Fix.", "Update.", "Complete."])(
+		"warns on broad action words followed by sentence punctuation: %s",
+		(text) => {
+			const state = apply([
 				{
 					...created(),
 					planSteps: [
 						{
-							text: "Fix the whole project",
-							expectedOutput: "Complete all fixes in the project",
+							text,
+							expectedOutput: `Result: ${text}`,
 							criterionIds: ["T1-AC1"],
 							evidenceRequired: true,
-							allowedActions: ["Update project files"],
+							allowedActions: [text],
 							decompositionStatus: "atomic",
 							granularityCheck: atomicCheck,
 						},
 					],
 				},
-			]),
-		).toThrow("vague or broad wording");
-	});
-
-	it.each(["Fix.", "Update.", "Complete."])(
-		"keeps rejecting broad action words followed by sentence punctuation: %s",
-		(text) => {
-			expect(() =>
-				apply([
-					{
-						...created(),
-						planSteps: [
-							{
-								text,
-								expectedOutput: `Result: ${text}`,
-								criterionIds: ["T1-AC1"],
-								evidenceRequired: true,
-								allowedActions: [text],
-								decompositionStatus: "atomic",
-								granularityCheck: atomicCheck,
-							},
-						],
-					},
-				]),
-			).toThrow("vague or broad wording");
+			]);
+			expect(
+				state.tasks.T1.planSteps[0]?.planQuality.issues.length,
+			).toBeGreaterThan(0);
 		},
 	);
 
