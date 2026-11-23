@@ -292,22 +292,22 @@ const planQualityRejections: Array<{
 	},
 	{
 		name: "multiple actions in step text",
-		step: { text: "Read header and publish footer" },
+		step: { text: "Run header and push footer" },
 		issue: "step text appears to contain multiple actions",
 	},
 	{
 		name: "multiple outputs",
-		step: { expectedOutput: "Header is rendered and footer is verified" },
+		step: { expectedOutput: "Header is built and footer is tested" },
 		issue: "expected output appears to contain multiple outputs",
 	},
 	{
 		name: "multiple outputs separated by semicolon",
-		step: { expectedOutput: "Header exists; footer exists" },
+		step: { expectedOutput: "Header is built; footer is tested" },
 		issue: "expected output appears to contain multiple outputs",
 	},
 	{
 		name: "multiple actions in allowed action separated by semicolon",
-		step: { allowedActions: ["render header; publish footer"] },
+		step: { allowedActions: ["build header; deploy footer"] },
 		issue: "allowedActions must each be a single action",
 	},
 	{

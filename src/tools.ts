@@ -24,7 +24,7 @@ import type {
 	ToolDefinition,
 	ToolResult,
 } from "./pi-types.ts";
-import { TaskTransitionError } from "./reducer.ts";
+import { TaskPlanQualityError, TaskTransitionError } from "./reducer.ts";
 import {
 	buildTaskResume,
 	formatTaskFocus,
@@ -993,7 +993,7 @@ function appendAndReport(
 		return {
 			...textResult(
 				[
-					`Error: ${errorText(error)}`,
+					`Error: ${getToolRejectionReason(error)}`,
 					"",
 					"Recovery:",
 					`- retry_with: ${recovery.retry_with}`,
@@ -1016,6 +1016,15 @@ function appendAndReport(
 						: [
 								"Recovery guidance: correct the rejected call above, then call task_resume for the next task action.",
 							]),
+					...(recovery.retry_payload
+						? [
+								"",
+								"Retry payload:",
+								"```json",
+								JSON.stringify(recovery.retry_payload, null, 2),
+								"```",
+							]
+						: []),
 				].join("\n"),
 				recovery,
 			),
@@ -1052,20 +1061,60 @@ function buildRejectionRecovery(
 ) {
 	const resume = buildTaskResume(state);
 	const retryExample = buildEvidenceRetryExample(event);
+	const planRecovery = buildTaskPlanRecovery(error, event);
 	const scopeRecovery = buildScopeUpdateRecovery(error, event);
 	return {
 		rejected: true,
-		reason: errorText(error),
+		reason: getToolRejectionReason(error),
 		retry_with:
+			planRecovery?.retry_with ??
 			scopeRecovery?.retry_with ??
 			resume.recommendedTool ??
 			resume.nextAllowedActions[0] ??
 			"task_resume",
-		minimum_params: scopeRecovery?.minimum_params ?? resume.minimumParams ?? {},
-		correct_rejected_call_first: scopeRecovery !== undefined,
+		minimum_params:
+			planRecovery?.minimum_params ??
+			scopeRecovery?.minimum_params ??
+			resume.minimumParams ??
+			{},
+		correct_rejected_call_first:
+			planRecovery !== undefined || scopeRecovery !== undefined,
 		do_not_retry_same_call: true,
 		...(retryExample ? { retry_example: retryExample } : {}),
+		...(planRecovery ? { retry_payload: planRecovery.minimum_params } : {}),
 		resume,
+	};
+}
+
+function getToolRejectionReason(error: unknown): string {
+	const message = errorText(error);
+	return error instanceof TaskPlanQualityError
+		? (message.split("\nRetry payload:")[0] ?? message)
+		: message;
+}
+
+function buildTaskPlanRecovery(
+	error: unknown,
+	event: TaskEvent | undefined,
+): { retry_with: "task_plan"; minimum_params: TaskPlanParams } | undefined {
+	if (
+		!(error instanceof TaskPlanQualityError) ||
+		event?.type !== "task.created"
+	) {
+		return undefined;
+	}
+	return {
+		retry_with: "task_plan",
+		minimum_params: {
+			title: event.title,
+			objective: event.objective,
+			acceptance_criteria: event.acceptanceCriteria,
+			...(event.initialSteps ? { initial_steps: event.initialSteps } : {}),
+			plan_steps: error.retryPlanSteps,
+			...(event.priority ? { priority: event.priority } : {}),
+			...(event.tags ? { tags: event.tags } : {}),
+			...(event.activate !== undefined ? { activate: event.activate } : {}),
+		},
 	};
 }
 

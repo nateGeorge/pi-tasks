@@ -17,7 +17,7 @@ import {
 	type TaskStep,
 	type TaskStepInput,
 } from "./model.ts";
-import { formatPlanQualityIssue } from "./plan-quality-feedback.ts";
+import { getPlanQualityFeedback } from "./plan-quality-feedback.ts";
 
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
 const MIN_NON_ATOMIC_PLAN_QUALITY_SCORE = 80;
@@ -98,6 +98,16 @@ export class TaskTransitionError extends Error {
 		super(message);
 		this.name = "TaskTransitionError";
 		this.code = code;
+	}
+}
+
+export class TaskPlanQualityError extends TaskTransitionError {
+	readonly retryPlanSteps: TaskStepInput[];
+
+	constructor(message: string, retryPlanSteps: TaskStepInput[]) {
+		super(message);
+		this.name = "TaskPlanQualityError";
+		this.retryPlanSteps = retryPlanSteps;
 	}
 }
 
@@ -619,66 +629,122 @@ function createPlanSteps(
 		throw new TaskTransitionError("At least one ordered plan step is required");
 	}
 
-	const createdSteps: TaskStep[] = [];
-	const validationErrors: string[] = [];
+	const build = (inputs: TaskStepInput[]) =>
+		inputs.map((step, index) =>
+			createPlanStep(
+				taskId,
+				step,
+				index,
+				criterionIds,
+				createdAt,
+				activate,
+				options,
+			),
+		);
+	const createdSteps = build(steps);
+	const issues = collectPlanStepIssues(createdSteps);
+	if (issues.length === 0) return createdSteps;
+
+	const retryPlanSteps = buildPlanRetrySteps(steps, issues, criterionIds);
+	const repairedSteps = build(retryPlanSteps);
+	if (collectPlanStepIssues(repairedSteps).length > 0) {
+		throw new TaskTransitionError(formatPlanStepIssues(issues, criterionIds));
+	}
+	const firstRetryStep = retryPlanSteps[0] ?? {};
+	throw new TaskPlanQualityError(
+		`${formatPlanStepIssues(issues, criterionIds)}\nRetry payload: ${JSON.stringify(firstRetryStep)}`,
+		retryPlanSteps,
+	);
+}
+
+interface PlanStepIssue {
+	index: number;
+	issue: string;
+}
+
+function collectPlanStepIssues(steps: readonly TaskStep[]): PlanStepIssue[] {
+	const issues: PlanStepIssue[] = [];
 	for (const [index, step] of steps.entries()) {
-		try {
-			createdSteps.push(
-				createPlanStep(
-					taskId,
-					step,
-					index,
-					criterionIds,
-					createdAt,
-					activate,
-					options,
-				),
-			);
-		} catch (error) {
-			if (!(error instanceof TaskTransitionError)) throw error;
-			const prefix = `Plan step ${index + 1}`;
-			validationErrors.push(
-				error.message.startsWith(prefix)
-					? error.message
-					: `${prefix}: ${error.message}`,
-			);
+		const invalidCriterionLink = step.planQuality.issues.some((issue) =>
+			issue.startsWith("criterionIds includes unknown ID"),
+		);
+		const missingRequiredValue =
+			!step.text.trim() ||
+			!step.expectedOutput.trim() ||
+			!step.granularityCheck.reason.trim();
+		const failsQualityGate =
+			missingRequiredValue ||
+			invalidCriterionLink ||
+			(step.decompositionStatus === "atomic"
+				? step.planQuality.issues.length > 0
+				: step.planQuality.score < MIN_NON_ATOMIC_PLAN_QUALITY_SCORE);
+		if (failsQualityGate) {
+			for (const issue of step.planQuality.issues)
+				issues.push({ index, issue });
 		}
 	}
-	if (validationErrors.length > 0) {
-		const retryPayload = mergePlanRetryPayloads(validationErrors);
-		const retry = `\nRetry payload: ${JSON.stringify(retryPayload)}`;
-		if (validationErrors.length === 1) {
-			throw new TaskTransitionError(`${validationErrors[0]}${retry}`);
-		}
-		throw new TaskTransitionError(
-			`Plan validation failed:\n- ${validationErrors.join("\n- ")}${retry}`,
+	return issues;
+}
+
+function buildPlanRetrySteps(
+	steps: readonly TaskStepInput[],
+	issues: readonly PlanStepIssue[],
+	availableCriterionIds: readonly string[],
+): TaskStepInput[] {
+	const rewrites = new Map<number, Partial<TaskStepInput>>();
+	for (const { index, issue } of issues) {
+		const feedback = getPlanQualityFeedback(issue, availableCriterionIds);
+		rewrites.set(
+			index,
+			mergePlanStepRewrite(rewrites.get(index), feedback.rewrite),
 		);
 	}
-	return createdSteps;
+	return steps.map((step, index) =>
+		mergePlanStepInput(step, rewrites.get(index) ?? {}),
+	);
 }
 
-function mergePlanRetryPayloads(
-	errors: readonly string[],
+function mergePlanStepRewrite(
+	previous: Partial<TaskStepInput> | undefined,
+	next: Partial<TaskStepInput>,
 ): Partial<TaskStepInput> {
-	const merged: Record<string, unknown> = {};
-	for (const error of errors) {
-		for (const match of error.matchAll(/Example rewrite: (\{[^\n]*\})/gu)) {
-			const parsed: unknown = JSON.parse(match[1] ?? "{}");
-			if (!isRecord(parsed)) continue;
-			for (const [key, value] of Object.entries(parsed)) {
-				const previous = merged[key];
-				merged[key] =
-					isRecord(previous) && isRecord(value)
-						? { ...previous, ...value }
-						: value;
-			}
-		}
-	}
-	return merged as Partial<TaskStepInput>;
+	const previousCheck = previous?.granularityCheck;
+	const nextCheck = next.granularityCheck;
+	return {
+		...previous,
+		...next,
+		...(previousCheck && nextCheck
+			? { granularityCheck: { ...previousCheck, ...nextCheck } }
+			: {}),
+	};
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+function mergePlanStepInput(
+	step: TaskStepInput,
+	rewrite: Partial<TaskStepInput>,
+): TaskStepInput {
+	const existingCheck = step.granularityCheck;
+	const rewriteCheck = rewrite.granularityCheck;
+	return {
+		...step,
+		...rewrite,
+		...(existingCheck && rewriteCheck
+			? { granularityCheck: { ...existingCheck, ...rewriteCheck } }
+			: {}),
+	};
+}
+
+function formatPlanStepIssues(
+	issues: readonly PlanStepIssue[],
+	availableCriterionIds: readonly string[],
+): string {
+	const messages = issues.map(({ index, issue }) => {
+		const feedback = getPlanQualityFeedback(issue, availableCriterionIds);
+		return `Plan step ${index + 1} failed quality gate:\n- ${feedback.message}`;
+	});
+	return messages.length === 1
+		? (messages[0] ?? "Plan validation failed")
+		: `Plan validation failed:\n- ${messages.join("\n- ")}`;
 }
 
 function createPlanStep(
@@ -692,16 +758,6 @@ function createPlanStep(
 ): TaskStep {
 	const text = step.text.trim();
 	const expectedOutput = step.expectedOutput.trim();
-	if (!text) {
-		throw new TaskTransitionError(
-			`Plan steps cannot be blank. ${formatPlanQualityIssue("step text is too short")}`,
-		);
-	}
-	if (!expectedOutput) {
-		throw new TaskTransitionError(
-			`Plan step expectedOutput is required. ${formatPlanQualityIssue("expected output is too short")}`,
-		);
-	}
 	const requestedCriteria = unique(
 		step.criterionIds && step.criterionIds.length > 0
 			? step.criterionIds
@@ -729,21 +785,6 @@ function createPlanStep(
 		decompositionStatus,
 		granularityCheck,
 	});
-	validateGranularityContract(
-		{
-			...step,
-			text,
-			expectedOutput,
-			criterionIds: linkedCriteria,
-			decompositionStatus,
-			granularityCheck,
-			planQuality,
-			allowedActions: step.allowedActions ?? [],
-			evidenceRequired: step.evidenceRequired ?? true,
-		},
-		index,
-		criterionIds,
-	);
 	const status =
 		index === 0 && (activate || options.parentStatus)
 			? (options.parentStatus ?? "active")
@@ -786,6 +827,8 @@ function assessPlanQuality(step: {
 	if (step.text.length < 8) issues.push("step text is too short");
 	if (step.expectedOutput.length < 12)
 		issues.push("expected output is too short");
+	if (!step.granularityCheck.reason.trim())
+		issues.push("granularityCheck.reason is required");
 	const textVagueMatch = findPatternMatch(step.text, VAGUE_PLAN_PATTERNS);
 	if (textVagueMatch && !hasConcreteAnchor(step.text)) {
 		issues.push(
@@ -945,38 +988,6 @@ function normalizeGranularityCheck(step: TaskStepInput): TaskGranularityCheck {
 		hasSingleVerificationMethod: false,
 		hasNoHiddenSubtasks: false,
 	};
-}
-
-function validateGranularityContract(
-	step: TaskStepInput & {
-		decompositionStatus: TaskStep["decompositionStatus"];
-		granularityCheck: TaskGranularityCheck;
-		planQuality: PlanQuality;
-		criterionIds: string[];
-		allowedActions: string[];
-		evidenceRequired: boolean;
-	},
-	index: number,
-	availableCriterionIds: string[],
-): void {
-	if (!step.granularityCheck.reason.trim()) {
-		throw new TaskTransitionError(
-			`Plan step ${index + 1} ${formatPlanQualityIssue("granularityCheck.reason is required", availableCriterionIds)}`,
-		);
-	}
-	const hasInvalidCriterionLink = step.planQuality.issues.some((issue) =>
-		issue.startsWith("criterionIds includes unknown ID"),
-	);
-	const failsQualityGate =
-		hasInvalidCriterionLink ||
-		(step.decompositionStatus === "atomic"
-			? step.planQuality.issues.length > 0
-			: step.planQuality.score < MIN_NON_ATOMIC_PLAN_QUALITY_SCORE);
-	if (failsQualityGate) {
-		throw new TaskTransitionError(
-			`Plan step ${index + 1} failed quality gate:\n- ${step.planQuality.issues.map((issue) => formatPlanQualityIssue(issue, availableCriterionIds)).join("\n- ")}`,
-		);
-	}
 }
 
 function updatePlanStep(

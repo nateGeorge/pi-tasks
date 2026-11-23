@@ -101,12 +101,22 @@ const PREFIX_GUIDANCE: ReadonlyArray<readonly [string, PlanQualityGuidance]> = [
 	],
 ];
 
+export function getPlanQualityFeedback(
+	issue: string,
+	availableCriterionIds: readonly string[] = [],
+): { message: string; rewrite: Partial<TaskStepInput> } {
+	const guidance = getPlanQualityGuidance(issue, availableCriterionIds);
+	return {
+		message: `${issue}. Rule: ${guidance.rule} Example rewrite: ${JSON.stringify(guidance.rewrite)}`,
+		rewrite: guidance.rewrite,
+	};
+}
+
 export function formatPlanQualityIssue(
 	issue: string,
 	availableCriterionIds: readonly string[] = [],
 ): string {
-	const guidance = getPlanQualityGuidance(issue, availableCriterionIds);
-	return `${issue}. Rule: ${guidance.rule} Example rewrite: ${JSON.stringify(guidance.rewrite)}`;
+	return getPlanQualityFeedback(issue, availableCriterionIds).message;
 }
 
 function getPlanQualityGuidance(
