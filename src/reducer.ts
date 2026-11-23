@@ -20,33 +20,40 @@ import {
 
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
 const MIN_NON_ATOMIC_PLAN_QUALITY_SCORE = 80;
-const COMPOUND_STEP_PATTERNS = [
-	/[;&]/,
-	/(?<![/\\._-])(?:並且|然後|接著|以及|同時|再來)(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
-];
-// A conjunction only means two actions when a second verb follows it. "Extract symbols and
-// line refs" is one action; "Run tests and update docs" is two.
-const COMPOUND_CONJUNCTION =
-	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu;
-const SECOND_VERB_PATTERN =
-	/(?<![/\\._-])\b(?:add|analy[sz]e|apply|assess|build|bump|check|commit|compare|compute|create|delete|deploy|draft|edit|extract|fix|generate|implement|install|land|merge|move|open|publish|record|refactor|release|remove|rename|replace|reproduce|review|rewrite|run|ship|split|test|update|verify|wire|write)\b/iu;
-// A second action is an imperative verb that opens the clause after the conjunction.
-// "and update docs" is two actions; "and a test" names a thing, and "and where the value is
-// written" is a clause whose verb is a participle.
-const SECOND_ACTION_OPENER =
-	/^\s+(?:(?:then|also)\s+)?(?:the|a|an|its|their|your|this|that|where|which|so|but|if)\s+/iu;
-// Participles after a noun can describe a passive outcome; leading participles can also be
-// adjectives in a noun list, so classify the whole phrase before rejecting it.
-const PASSIVE_PARTICIPLE_WORDS =
-	"written|rebuilt|built|done|made|updated|changed|added|removed|created|deleted|tested|verified|fixed|moved|renamed|replaced|extracted|generated|installed|merged|published|recorded|refactored|released|shipped|split|wired|applied|compared|computed|edited|copied|passed|failed";
-const PASSIVE_PARTICIPLE_PATTERN = new RegExp(
-	`^(?:${PASSIVE_PARTICIPLE_WORDS})$`,
+// This short list favors few false refusals; only these explicit imperatives and their
+// participles can establish a compound step with high confidence.
+const COMPOUND_ACTIONS = [
+	{ imperative: "run", participle: "run" },
+	{ imperative: "push", participle: "pushed" },
+	{ imperative: "merge", participle: "merged" },
+	{ imperative: "deploy", participle: "deployed" },
+	{ imperative: "fix", participle: "fixed" },
+	{ imperative: "add", participle: "added" },
+	{ imperative: "update", participle: "updated" },
+	{ imperative: "write", participle: "written" },
+	{ imperative: "remove", participle: "removed" },
+	{ imperative: "open", participle: "opened" },
+	{ imperative: "close", participle: "closed" },
+	{ imperative: "install", participle: "installed" },
+	{ imperative: "test", participle: "tested" },
+	{ imperative: "build", participle: "built|rebuilt" },
+	{ imperative: "commit", participle: "committed" },
+] as const;
+const COMPOUND_IMPERATIVE = new RegExp(
+	`^(?:${COMPOUND_ACTIONS.map(({ imperative }) => imperative).join("|")})\\b`,
 	"iu",
 );
-const PASSIVE_OUTCOME_PATTERN = new RegExp(
-	`^(?:(?:the|a|an|its|their|your|this|that)\\s+)?(?:[\\p{L}\\p{N}_-]+\\s+){1,4}(?:(?:is|are|was|were|has been|have been|had been)\\s+)?(?:${PASSIVE_PARTICIPLE_WORDS})\\b`,
+const COMPOUND_PARTICIPLE_END = new RegExp(
+	`\\b(?:${COMPOUND_ACTIONS.map(({ participle }) => participle).join("|")})[.!?]?$`,
 	"iu",
 );
+const COMPOUND_CLAUSE_SEPARATOR = /\s+(?:and|then)\s+|[;,]/iu;
+const COMMAND_TOKEN =
+	/\b(?:npm|pnpm|yarn|bun)\s+run\s+[\w:-]+(?:\s+--[^\s,;]+)*/giu;
+const PATH_TOKEN =
+	/(?<![\p{L}\p{N}_])[\w.-]+(?:[/\\][\w.-]+)+(?![\p{L}\p{N}_])/giu;
+const FILE_TOKEN =
+	/(?<![\p{L}\p{N}_])[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{2,}\b/giu;
 const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
@@ -59,8 +66,8 @@ const VAGUE_PLAN_PATTERNS = [
 // A vague verb is only vague when the step names nothing specific: no path, flag, code token or
 // symbol. "Fix the bug" stays rejected; "Fix the pgrep flag check to allow -f alone" is specific.
 const CONCRETE_ANCHORS = [
-	/(?<![\w.])(?!(?:e\.g|i\.e)(?![\w-]))[\w-]+(?:[\\/][\w.-]+)*\.[a-z]{1,5}\b/i,
-	/\S\/\S/,
+	/(?<![\p{L}\p{N}_])[\w.-]+(?:[\\/][\w.-]+)+(?![\p{L}\p{N}_])/u,
+	/(?<![\p{L}\p{N}_])[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{2,}\b/u,
 	/--[a-z][\w-]+/i,
 	/(?<![\w-])-[a-z](?![\w-])/i,
 	/`[^`]+`/,
@@ -775,28 +782,20 @@ function assessPlanQuality(step: {
 			`allowedActions contain vague actions (${JSON.stringify(actionVagueMatch)})`,
 		);
 	}
-	const textCompoundMatch =
-		findPatternMatch(step.text, COMPOUND_STEP_PATTERNS) ??
-		findCompoundClause(step.text);
+	const textCompoundMatch = findCompoundClause(step.text);
 	if (textCompoundMatch) {
 		issues.push(
 			`step text appears to contain multiple actions (${JSON.stringify(textCompoundMatch)})`,
 		);
 	}
-	const outputCompoundMatch =
-		findPatternMatch(step.expectedOutput, COMPOUND_STEP_PATTERNS) ??
-		findCompoundClause(step.expectedOutput);
+	const outputCompoundMatch = findCompoundClause(step.expectedOutput);
 	if (outputCompoundMatch) {
 		issues.push(
 			`expected output appears to contain multiple outputs (${JSON.stringify(outputCompoundMatch)})`,
 		);
 	}
 	const actionCompoundMatch = step.allowedActions
-		.map(
-			(action) =>
-				findPatternMatch(action, COMPOUND_STEP_PATTERNS) ??
-				findCompoundClause(action),
-		)
+		.map((action) => findCompoundClause(action))
 		.find((match) => match !== undefined);
 	if (actionCompoundMatch) {
 		issues.push(
@@ -826,37 +825,29 @@ function hasConcreteAnchor(value: string): boolean {
 	return CONCRETE_ANCHORS.some((pattern) => pattern.test(value));
 }
 function findCompoundClause(value: string): string | undefined {
-	const conjunctionPattern = new RegExp(
-		COMPOUND_CONJUNCTION.source,
-		`${COMPOUND_CONJUNCTION.flags}g`,
-	);
-	const matches = [...value.matchAll(conjunctionPattern)];
-	for (const [index, match] of matches.entries()) {
-		const start = (match.index ?? 0) + match[0].length;
-		const next = matches[index + 1];
-		const end = next?.index ?? value.length;
-		const rest = value.slice(start, end);
-		if (/^\s*(?:where|which)\b/iu.test(rest)) continue;
-		if (hasPassiveOutcome(rest)) return match[0];
-		// "and a test" names a thing, and "and where the value is written" opens a
-		// subordinate clause; neither is a second action.
-		if (SECOND_ACTION_OPENER.test(rest)) continue;
-		const opener = rest.trimStart().split(/[\s,;]/u)[0] ?? "";
-		if (SECOND_VERB_PATTERN.test(opener)) return match[0];
+	const normalized = value
+		.replace(/`[^`]*`/gu, " TOKEN ")
+		.replace(COMMAND_TOKEN, " TOKEN ")
+		.replace(PATH_TOKEN, " TOKEN ")
+		.replace(FILE_TOKEN, " TOKEN ");
+	const clauses = normalized
+		.split(COMPOUND_CLAUSE_SEPARATOR)
+		.map((clause) => clause.trim().replace(/^(?:(?:and|then)\s+)+/iu, ""));
+	const separators = [
+		...normalized.matchAll(new RegExp(COMPOUND_CLAUSE_SEPARATOR.source, "giu")),
+	];
+	for (let index = 0; index < clauses.length - 1; index += 1) {
+		const left = clauses[index] ?? "";
+		const right = clauses[index + 1] ?? "";
+		if (
+			(COMPOUND_IMPERATIVE.test(left) && COMPOUND_IMPERATIVE.test(right)) ||
+			(COMPOUND_PARTICIPLE_END.test(left) &&
+				COMPOUND_PARTICIPLE_END.test(right))
+		) {
+			return separators[index]?.[0].trim() ?? "compound clause";
+		}
 	}
 	return undefined;
-}
-
-function hasPassiveOutcome(rest: string): boolean {
-	const clause = rest.trim();
-	if (!clause) return false;
-	const firstWords = clause.split(/[\s,;]/u);
-	if (PASSIVE_PARTICIPLE_PATTERN.test(firstWords[0] ?? "")) {
-		return /^(?:the|a|an|its|their|your|this|that)\b/iu.test(
-			firstWords[1] ?? "",
-		);
-	}
-	return PASSIVE_OUTCOME_PATTERN.test(clause);
 }
 function findPatternMatch(
 	value: string,

@@ -340,29 +340,85 @@ describe("task reducer", () => {
 		expect(state.tasks.T1.planSteps[0]?.allowedActions).toEqual([]);
 	});
 
-	it.each(["Run tests and update docs", "Run tests then update docs"])(
-		"rejects compound atomic step wording %j",
-		(text) => {
-			expect(() =>
-				apply([
+	it.each([
+		"Run tests and push the branch",
+		"Run tests then push the branch",
+		"Run tests; push the branch",
+		"Run tests, push the branch",
+	])("rejects known imperative compound wording %j", (text) => {
+		expect(() =>
+			apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text,
+							expectedOutput: "Test result is recorded",
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: ["npm test"],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]),
+		).toThrow("multiple actions");
+	});
+
+	it("rejects two known passive outcomes", () => {
+		expect(() =>
+			apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text: "Record the verification result",
+							expectedOutput: "Checkpoint written and docs/README.md updated",
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: ["npm test"],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]),
+		).toThrow("multiple outputs");
+	});
+
+	it.each([
+		"Compare the baseline and the generated snapshots",
+		"Inspect aliases and build/test output",
+		"Read the schema and its examples",
+		"Check the output where the report is written",
+		"Review the source, tests, and docs",
+		"Build/test output contains one status",
+		"Run `npm run build` and inspect its output",
+		"Run tests and build/test output",
+		"Write a note about tests and docs",
+		"Check the table for written snapshots",
+		"Run baseline checks and the generated snapshots",
+		"Check docs/README.md and src/config.test.ts",
+	])("accepts ordinary atomic step wording %j", (text) => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [
 					{
-						...created(),
-						planSteps: [
-							{
-								text,
-								expectedOutput: "Test result is recorded",
-								criterionIds: ["T1-AC1"],
-								evidenceRequired: true,
-								allowedActions: ["npm test"],
-								decompositionStatus: "atomic",
-								granularityCheck: atomicCheck,
-							},
-						],
+						text,
+						expectedOutput: "One observable result is recorded",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["edit source"],
+						decompositionStatus: "atomic",
+						granularityCheck: atomicCheck,
 					},
-				]),
-			).toThrow("multiple actions");
-		},
-	);
+				],
+			},
+		]);
+		expect(state.tasks.T1.planSteps).toHaveLength(1);
+	});
 
 	it("rejects one vague wording issue and names the matched token", () => {
 		expect(() =>
@@ -463,9 +519,9 @@ describe("task reducer", () => {
 	);
 
 	it.each([
-		"Extract symbols and line refs and run tests",
-		"Checkpoint written and the index rebuilt",
-	])("rejects every compound action or passive outcome: %j", (text) => {
+		"Run tests and push the branch",
+		"Checkpoint written and docs/README.md updated",
+	])("rejects high-confidence compound wording: %j", (text) => {
 		expect(() =>
 			apply([
 				{
@@ -509,8 +565,8 @@ describe("task reducer", () => {
 		).toBeDefined();
 	});
 
-	it.each(["e.g.", "i.e."])(
-		"does not treat prose abbreviation %s as a concrete file anchor",
+	it.each(["e.g.", "i.e.", "U.S."])(
+		"does not treat dotted initialism %s as a concrete file anchor",
 		(abbreviation) => {
 			expect(() =>
 				apply([
@@ -533,25 +589,28 @@ describe("task reducer", () => {
 		},
 	);
 
-	it("still recognizes real file extensions as concrete anchors", () => {
-		const state = apply([
-			{
-				...created(),
-				planSteps: [
-					{
-						text: "Fix everything in src/app.ts",
-						expectedOutput: "src/app.ts contains the corrected setting",
-						criterionIds: ["T1-AC1"],
-						evidenceRequired: true,
-						allowedActions: ["edit src/app.ts"],
-						decompositionStatus: "atomic",
-						granularityCheck: atomicCheck,
-					},
-				],
-			},
-		]);
-		expect(state.tasks.T1.planSteps).toHaveLength(1);
-	});
+	it.each(["src/app.ts", "src/config.test.ts"])(
+		"still recognizes complete file candidate %s as a concrete anchor",
+		(path) => {
+			const state = apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text: `Fix everything in ${path}`,
+							expectedOutput: `${path} contains the corrected setting`,
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: [`edit ${path}`],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]);
+			expect(state.tasks.T1.planSteps).toHaveLength(1);
+		},
+	);
 
 	it("reports quality failures from every invalid plan step", () => {
 		let caught: unknown;
