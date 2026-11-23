@@ -435,17 +435,115 @@ describe("task reducer", () => {
 		).toThrow('expected output appears to contain multiple outputs ("and")');
 	});
 
-	it("accepts a conjunction that joins nouns instead of actions", () => {
+	it.each([
+		"Extract symbols and line refs for every caller",
+		"Extract symbols and line refs and API examples",
+		"Inspect updated docs and archived logs",
+	])(
+		"accepts noun lists without treating adjectives as outcomes: %j",
+		(text) => {
+			const state = apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text,
+							expectedOutput: "map.md lists the symbols and line refs",
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: ["read src/index.ts"],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]);
+			expect(state.tasks.T1.planSteps).toHaveLength(1);
+		},
+	);
+
+	it.each([
+		"Extract symbols and line refs and run tests",
+		"Checkpoint written and the index rebuilt",
+	])("rejects every compound action or passive outcome: %j", (text) => {
+		expect(() =>
+			apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text,
+							expectedOutput: "One plan result is recorded",
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: ["edit source"],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]),
+		).toThrow("multiple actions");
+	});
+
+	it("applies the compound check to allowedActions but permits a noun list", () => {
+		const event = (allowedActions: string[]): TaskEvent => ({
+			...created(),
+			planSteps: [
+				{
+					text: "Extract symbols and line refs",
+					expectedOutput: "map.md lists the symbols and line refs",
+					criterionIds: ["T1-AC1"],
+					evidenceRequired: true,
+					allowedActions,
+					decompositionStatus: "atomic",
+					granularityCheck: atomicCheck,
+				},
+			],
+		});
+		expect(() => apply([event(["run tests and deploy"])])).toThrow(
+			"allowedActions must each be a single action",
+		);
+		expect(
+			apply([event(["extract symbols and line refs"])]).tasks.T1,
+		).toBeDefined();
+	});
+
+	it.each(["e.g.", "i.e."])(
+		"does not treat prose abbreviation %s as a concrete file anchor",
+		(abbreviation) => {
+			expect(() =>
+				apply([
+					{
+						...created(),
+						planSteps: [
+							{
+								text: `Fix everything in ${abbreviation} the app`,
+								expectedOutput: "The application setting is corrected",
+								criterionIds: ["T1-AC1"],
+								evidenceRequired: true,
+								allowedActions: ["edit application"],
+								decompositionStatus: "atomic",
+								granularityCheck: atomicCheck,
+							},
+						],
+					},
+				]),
+			).toThrow("vague or broad wording");
+		},
+	);
+
+	it("still recognizes real file extensions as concrete anchors", () => {
 		const state = apply([
 			{
 				...created(),
 				planSteps: [
 					{
-						text: "Extract symbols and line refs for every caller",
-						expectedOutput: "map.md lists the symbols and line refs",
+						text: "Fix everything in src/app.ts",
+						expectedOutput: "src/app.ts contains the corrected setting",
 						criterionIds: ["T1-AC1"],
 						evidenceRequired: true,
-						allowedActions: ["read src/index.ts"],
+						allowedActions: ["edit src/app.ts"],
 						decompositionStatus: "atomic",
 						granularityCheck: atomicCheck,
 					},

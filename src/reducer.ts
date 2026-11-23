@@ -35,10 +35,18 @@ const SECOND_VERB_PATTERN =
 // written" is a clause whose verb is a participle.
 const SECOND_ACTION_OPENER =
 	/^\s+(?:(?:then|also)\s+)?(?:the|a|an|its|their|your|this|that|where|which|so|but|if)\s+/iu;
-// A passive participle later in the clause still means a second outcome:
-// "Checkpoint written and index rebuilt" is two.
-const SECOND_PARTICIPLE_PATTERN =
-	/(?<![/\\._-])\b(?:written|rebuilt|built|done|made|updated|changed|added|removed|created|deleted|tested|verified|fixed|moved|renamed|replaced|extracted|generated|installed|merged|published|recorded|refactored|released|shipped|split|wired|applied|compared|computed|edited|copied|passed|failed)\b/iu;
+// Participles after a noun can describe a passive outcome; leading participles can also be
+// adjectives in a noun list, so classify the whole phrase before rejecting it.
+const PASSIVE_PARTICIPLE_WORDS =
+	"written|rebuilt|built|done|made|updated|changed|added|removed|created|deleted|tested|verified|fixed|moved|renamed|replaced|extracted|generated|installed|merged|published|recorded|refactored|released|shipped|split|wired|applied|compared|computed|edited|copied|passed|failed";
+const PASSIVE_PARTICIPLE_PATTERN = new RegExp(
+	`^(?:${PASSIVE_PARTICIPLE_WORDS})$`,
+	"iu",
+);
+const PASSIVE_OUTCOME_PATTERN = new RegExp(
+	`^(?:(?:the|a|an|its|their|your|this|that)\\s+)?(?:[\\p{L}\\p{N}_-]+\\s+){1,4}(?:(?:is|are|was|were|has been|have been|had been)\\s+)?(?:${PASSIVE_PARTICIPLE_WORDS})\\b`,
+	"iu",
+);
 const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
@@ -51,7 +59,7 @@ const VAGUE_PLAN_PATTERNS = [
 // A vague verb is only vague when the step names nothing specific: no path, flag, code token or
 // symbol. "Fix the bug" stays rejected; "Fix the pgrep flag check to allow -f alone" is specific.
 const CONCRETE_ANCHORS = [
-	/[\w./-]*\.[a-z]{1,5}\b/i,
+	/(?<![\w.])(?!(?:e\.g|i\.e)(?![\w-]))[\w-]+(?:[\\/][\w.-]+)*\.[a-z]{1,5}\b/i,
 	/\S\/\S/,
 	/--[a-z][\w-]+/i,
 	/(?<![\w-])-[a-z](?![\w-])/i,
@@ -783,10 +791,13 @@ function assessPlanQuality(step: {
 			`expected output appears to contain multiple outputs (${JSON.stringify(outputCompoundMatch)})`,
 		);
 	}
-	const actionCompoundMatch = findPatternMatchInValues(
-		step.allowedActions,
-		COMPOUND_STEP_PATTERNS,
-	);
+	const actionCompoundMatch = step.allowedActions
+		.map(
+			(action) =>
+				findPatternMatch(action, COMPOUND_STEP_PATTERNS) ??
+				findCompoundClause(action),
+		)
+		.find((match) => match !== undefined);
 	if (actionCompoundMatch) {
 		issues.push(
 			`allowedActions must each be a single action (${JSON.stringify(actionCompoundMatch)})`,
@@ -815,15 +826,37 @@ function hasConcreteAnchor(value: string): boolean {
 	return CONCRETE_ANCHORS.some((pattern) => pattern.test(value));
 }
 function findCompoundClause(value: string): string | undefined {
-	const match = COMPOUND_CONJUNCTION.exec(value);
-	if (!match) return undefined;
-	const rest = value.slice((match.index ?? 0) + match[0].length);
-	// "and a test" names a thing, and "and where the value is written" opens a
-	// subordinate clause; neither is a second action.
-	if (SECOND_ACTION_OPENER.test(rest)) return undefined;
-	const opener = rest.trimStart().split(/[\s,;]/u)[0] ?? "";
-	if (SECOND_VERB_PATTERN.test(opener)) return match[0];
-	return SECOND_PARTICIPLE_PATTERN.test(rest) ? match[0] : undefined;
+	const conjunctionPattern = new RegExp(
+		COMPOUND_CONJUNCTION.source,
+		`${COMPOUND_CONJUNCTION.flags}g`,
+	);
+	const matches = [...value.matchAll(conjunctionPattern)];
+	for (const [index, match] of matches.entries()) {
+		const start = (match.index ?? 0) + match[0].length;
+		const next = matches[index + 1];
+		const end = next?.index ?? value.length;
+		const rest = value.slice(start, end);
+		if (/^\s*(?:where|which)\b/iu.test(rest)) continue;
+		if (hasPassiveOutcome(rest)) return match[0];
+		// "and a test" names a thing, and "and where the value is written" opens a
+		// subordinate clause; neither is a second action.
+		if (SECOND_ACTION_OPENER.test(rest)) continue;
+		const opener = rest.trimStart().split(/[\s,;]/u)[0] ?? "";
+		if (SECOND_VERB_PATTERN.test(opener)) return match[0];
+	}
+	return undefined;
+}
+
+function hasPassiveOutcome(rest: string): boolean {
+	const clause = rest.trim();
+	if (!clause) return false;
+	const firstWords = clause.split(/[\s,;]/u);
+	if (PASSIVE_PARTICIPLE_PATTERN.test(firstWords[0] ?? "")) {
+		return /^(?:the|a|an|its|their|your|this|that)\b/iu.test(
+			firstWords[1] ?? "",
+		);
+	}
+	return PASSIVE_OUTCOME_PATTERN.test(clause);
 }
 function findPatternMatch(
 	value: string,
