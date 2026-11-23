@@ -175,6 +175,14 @@ export function buildTaskPlanRetryEvent(
 				: fallback
 					? [`Verify ${fallback}`]
 					: event.initialSteps;
+	} else if (fallback) {
+		retryEvent.planSteps = [
+			{
+				text: `Verify ${fallback}`,
+				expectedOutput: `Result of: ${fallback}`,
+				criterionIds: criterionIds(event.taskId, acceptanceCriteria.length),
+			},
+		];
 	}
 	return retryEvent;
 }

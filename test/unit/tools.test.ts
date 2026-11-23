@@ -666,6 +666,49 @@ describe("registered task tools", () => {
 		).toBeGreaterThan(0);
 	});
 
+	it("recovers a plan with omitted step arrays in one successful first retry", async () => {
+		const { tools, ctx, store } = createHarness();
+		const plan = requireTool(tools, "task_plan");
+		const params = {
+			title: "Omitted plan recovery",
+			objective: "Restore plan creation when both step arrays are omitted",
+			acceptance_criteria: ["The corrected plan can be created"],
+			priority: "high",
+			tags: ["preserve-tag"],
+		};
+		const rejected = await execute(plan, params, ctx);
+		const text = rejected.content[0]?.text ?? "";
+		expect(rejected.isError).toBe(true);
+		expect(text).toContain("At least one ordered plan step is required");
+		expect(text.match(/Retry payload:/gu)).toHaveLength(1);
+		const payloadMatch = text.match(
+			/Retry payload:\n```json\n([\s\S]+)\n```$/u,
+		);
+		expect(payloadMatch).not.toBeNull();
+		const retryParams = JSON.parse(payloadMatch?.[1] ?? "null") as Record<
+			string,
+			unknown
+		>;
+		expect(retryParams).toMatchObject({
+			title: params.title,
+			objective: params.objective,
+			acceptance_criteria: params.acceptance_criteria,
+			priority: params.priority,
+			tags: params.tags,
+			plan_steps: [
+				{
+					text: `Verify ${params.objective}`,
+					expectedOutput: `Result of: ${params.objective}`,
+					criterionIds: ["T1-AC1"],
+				},
+			],
+		});
+		expect(retryParams).not.toHaveProperty("initial_steps");
+		const retried = await execute(plan, retryParams, ctx);
+		expect(retried.isError).toBeUndefined();
+		expect(store.getState().tasks.T1?.planSteps).toHaveLength(1);
+	});
+
 	it("recovers an empty plan_steps array with one successful first retry", async () => {
 		const { tools, ctx, store } = createHarness();
 		const plan = requireTool(tools, "task_plan");
