@@ -24,7 +24,11 @@ import type {
 	ToolDefinition,
 	ToolResult,
 } from "./pi-types.ts";
-import { TaskPlanQualityError, TaskTransitionError } from "./reducer.ts";
+import {
+	reduceTaskState,
+	TaskPlanQualityError,
+	TaskTransitionError,
+} from "./reducer.ts";
 import {
 	buildTaskResume,
 	formatTaskFocus,
@@ -997,7 +1001,9 @@ function appendAndReport(
 					"",
 					"Recovery:",
 					`- retry_with: ${recovery.retry_with}`,
-					`- minimum_params: ${JSON.stringify(recovery.minimum_params)}`,
+					...(recovery.retry_payload
+						? []
+						: [`- minimum_params: ${JSON.stringify(recovery.minimum_params)}`]),
 					`- do_not_retry_same_call: ${recovery.do_not_retry_same_call}`,
 					`- reason: ${recovery.reason}`,
 					...(recovery.retry_example
@@ -1061,7 +1067,7 @@ function buildRejectionRecovery(
 ) {
 	const resume = buildTaskResume(state);
 	const retryExample = buildEvidenceRetryExample(event);
-	const planRecovery = buildTaskPlanRecovery(error, event);
+	const planRecovery = buildTaskPlanRecovery(error, state);
 	const scopeRecovery = buildScopeUpdateRecovery(error, event);
 	return {
 		rejected: true,
@@ -1087,22 +1093,20 @@ function buildRejectionRecovery(
 }
 
 function getToolRejectionReason(error: unknown): string {
-	const message = errorText(error);
-	return error instanceof TaskPlanQualityError
-		? (message.split("\nRetry payload:")[0] ?? message)
-		: message;
+	return errorText(error);
 }
 
 function buildTaskPlanRecovery(
 	error: unknown,
-	event: TaskEvent | undefined,
+	state: TaskState,
 ): { retry_with: "task_plan"; minimum_params: TaskPlanParams } | undefined {
-	if (
-		!(error instanceof TaskPlanQualityError) ||
-		event?.type !== "task.created"
-	) {
+	if (!(error instanceof TaskPlanQualityError)) return undefined;
+	try {
+		reduceTaskState(state, error.retryEvent);
+	} catch {
 		return undefined;
 	}
+	const event = error.retryEvent;
 	return {
 		retry_with: "task_plan",
 		minimum_params: {
@@ -1110,7 +1114,7 @@ function buildTaskPlanRecovery(
 			objective: event.objective,
 			acceptance_criteria: event.acceptanceCriteria,
 			...(event.initialSteps ? { initial_steps: event.initialSteps } : {}),
-			plan_steps: error.retryPlanSteps,
+			...(event.planSteps ? { plan_steps: event.planSteps } : {}),
 			...(event.priority ? { priority: event.priority } : {}),
 			...(event.tags ? { tags: event.tags } : {}),
 			...(event.activate !== undefined ? { activate: event.activate } : {}),

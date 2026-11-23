@@ -666,6 +666,131 @@ describe("registered task tools", () => {
 		).toBeGreaterThan(0);
 	});
 
+	it.each([false, true])(
+		"repairs task and step issues into one validated task_plan call with active task=%s",
+		async (hasActiveTask) => {
+			const { tools, ctx, store } = createHarness();
+			const plan = requireTool(tools, "task_plan");
+			const activeParams = {
+				title: "Existing task",
+				objective: "Keep an active task while recovering another plan",
+				acceptance_criteria: ["The existing task remains active"],
+				plan_steps: [
+					{
+						text: "Read the existing task contract",
+						expectedOutput: "Existing task contract is visible",
+						criterionIds: ["T1-AC1"],
+						evidenceRequired: true,
+						allowedActions: ["task_plan"],
+						decompositionStatus: "atomic",
+						granularityCheck: {
+							isAtomic: true,
+							reason: "One task read produces one contract view",
+							canBeDoneInOneAgentAction: true,
+							hasSingleObservableOutput: true,
+							hasSingleVerificationMethod: true,
+							hasNoHiddenSubtasks: true,
+						},
+					},
+				],
+			};
+			if (hasActiveTask) {
+				const active = await execute(plan, activeParams, ctx);
+				expect(active.isError).toBeUndefined();
+			}
+			const taskId = hasActiveTask ? "T2" : "T1";
+			const params = {
+				title: " ",
+				objective: "Preserve parser response mapping",
+				acceptance_criteria: [
+					"Parser mapping stays compatible",
+					"The second parser check is recorded",
+				],
+				priority: "high",
+				tags: ["preserve-this-tag"],
+				activate: !hasActiveTask,
+				plan_steps: [
+					{
+						text: " ",
+						expectedOutput: " ",
+						criterionIds: [`${taskId}-AC2`],
+						evidenceRequired: true,
+						allowedActions: ["run parser check"],
+						decompositionStatus: "atomic",
+						granularityCheck: {
+							isAtomic: true,
+							reason: " ",
+							canBeDoneInOneAgentAction: true,
+							hasSingleObservableOutput: true,
+							hasSingleVerificationMethod: true,
+							hasNoHiddenSubtasks: true,
+						},
+					},
+					{
+						text: "Update parser result mapping",
+						expectedOutput: "",
+						criterionIds: [`${taskId}-AC99`],
+						evidenceRequired: true,
+						allowedActions: ["edit parser mapper"],
+						decompositionStatus: "atomic",
+						granularityCheck: {
+							isAtomic: true,
+							reason: "One mapping check produces one parser result",
+							canBeDoneInOneAgentAction: true,
+							hasSingleObservableOutput: true,
+							hasSingleVerificationMethod: true,
+							hasNoHiddenSubtasks: true,
+						},
+					},
+				],
+			};
+			const rejected = await execute(plan, params, ctx);
+			expect(rejected.isError).toBe(true);
+			const text = rejected.content[0]?.text ?? "";
+			expect(text.match(/Retry payload:/gu)).toHaveLength(1);
+			expect(text).not.toContain("- minimum_params:");
+			const payloadMatch = text.match(
+				/Retry payload:\n```json\n([\s\S]+)\n```$/u,
+			);
+			expect(payloadMatch).not.toBeNull();
+			const retryParams = JSON.parse(payloadMatch?.[1] ?? "null") as Record<
+				string,
+				unknown
+			>;
+			expect(retryParams).toMatchObject({
+				title: params.objective,
+				objective: params.objective,
+				acceptance_criteria: params.acceptance_criteria,
+				priority: params.priority,
+				tags: params.tags,
+				activate: params.activate,
+			});
+			const retrySteps = retryParams.plan_steps as Array<
+				Record<string, unknown>
+			>;
+			expect(retrySteps[0]).toMatchObject({
+				text: "Verify The second parser check is recorded",
+				expectedOutput: "Result of: The second parser check is recorded",
+				criterionIds: [`${taskId}-AC2`],
+				allowedActions: ["run parser check"],
+				decompositionStatus: "atomic",
+			});
+			expect(retrySteps[1]).toEqual({
+				...params.plan_steps[1],
+				expectedOutput: "Result of: Update parser result mapping",
+				criterionIds: [`${taskId}-AC1`],
+			});
+			expect(rejected.details).toMatchObject({ minimum_params: retryParams });
+			const retried = await execute(plan, retryParams, ctx);
+			expect(retried.isError).toBeUndefined();
+			expect(store.getState().tasks[taskId]?.planSteps).toHaveLength(2);
+			expect(store.getState().activeTaskId).toBe("T1");
+			expect(store.getState().tasks[taskId]?.status).toBe(
+				hasActiveTask ? "pending" : "active",
+			);
+		},
+	);
+
 	it("does not consume task IDs for structurally rejected task_plan calls", async () => {
 		const { tools, ctx, store } = createHarness();
 		const plan = requireTool(tools, "task_plan");
@@ -697,8 +822,9 @@ describe("registered task tools", () => {
 			ctx,
 		);
 		expect(rejected.content[0]?.text).toContain("Error:");
-		expect(rejected.content[0]?.text).toContain("Rule: ");
-		expect(rejected.content[0]?.text).toContain("Example rewrite: ");
+		expect(rejected.content[0]?.text).toContain("Plan step 1 text is required");
+		expect(rejected.content[0]?.text).toContain("Retry payload:");
+		expect(rejected.content[0]?.text).not.toContain("- minimum_params:");
 		expect(Object.keys(store.getState().tasks)).toEqual([]);
 
 		const created = await execute(

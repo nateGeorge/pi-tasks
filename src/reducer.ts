@@ -9,6 +9,7 @@ import {
 	MAX_EVIDENCE_SUMMARY_LENGTH,
 	type PlanQuality,
 	type Task,
+	type TaskCreatedEvent,
 	type TaskEvent,
 	type TaskEvidence,
 	type TaskGranularityCheck,
@@ -17,10 +18,14 @@ import {
 	type TaskStep,
 	type TaskStepInput,
 } from "./model.ts";
-import { getPlanQualityFeedback } from "./plan-quality-feedback.ts";
+import {
+	buildTaskPlanRetryEvent,
+	collectPlanStepIssues,
+	collectTaskPlanIssues,
+	formatTaskPlanIssues,
+} from "./task-plan-recovery.ts";
 
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
-const MIN_NON_ATOMIC_PLAN_QUALITY_SCORE = 80;
 const COMPOUND_STEP_PATTERNS = [
 	/[;&]/,
 	/(?<![/\\._-])(?:並且|然後|接著|以及|同時|再來)(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
@@ -60,7 +65,7 @@ const VAGUE_PLAN_PATTERNS = [
 // A vague verb is only vague when the step names nothing specific: no path, flag, code token or
 // symbol. "Fix the bug" stays rejected; "Fix the pgrep flag check to allow -f alone" is specific.
 const CONCRETE_ANCHORS = [
-	/(?<![\w.])(?!(?:e\.g|i\.e)(?![\w-]))[\w-]+(?:[\\/][\w.-]+)*\.[a-z]{1,5}\b/i,
+	/(?<![\w.])(?![a-z](?:\.[a-z]){1,3}\b)[\w-]+(?:[\\/][\w.-]+)*\.[a-z]{1,5}\b/i,
 	/\S\/\S/,
 	/--[a-z][\w-]+/i,
 	/(?<![\w-])-[a-z](?![\w-])/i,
@@ -102,12 +107,12 @@ export class TaskTransitionError extends Error {
 }
 
 export class TaskPlanQualityError extends TaskTransitionError {
-	readonly retryPlanSteps: TaskStepInput[];
+	readonly retryEvent: TaskCreatedEvent;
 
-	constructor(message: string, retryPlanSteps: TaskStepInput[]) {
+	constructor(message: string, retryEvent: TaskCreatedEvent) {
 		super(message);
 		this.name = "TaskPlanQualityError";
-		this.retryPlanSteps = retryPlanSteps;
+		this.retryEvent = retryEvent;
 	}
 }
 
@@ -159,27 +164,14 @@ function createTask(
 	if (state.tasks[event.taskId]) {
 		throw new TaskTransitionError(`Task ${event.taskId} already exists`);
 	}
-	if (!event.title.trim())
-		throw new TaskTransitionError("Task title is required");
-	if (!event.objective.trim())
-		throw new TaskTransitionError("Task objective is required");
-	if (event.acceptanceCriteria.length === 0) {
-		throw new TaskTransitionError(
-			"At least one acceptance criterion is required",
-		);
-	}
 
 	const acceptanceCriteria = event.acceptanceCriteria.map(
-		(text, index): AcceptanceCriterion => {
-			if (!text.trim())
-				throw new TaskTransitionError("Acceptance criteria cannot be blank");
-			return {
-				id: `${event.taskId}-AC${index + 1}`,
-				text,
-				status: "pending",
-				evidenceIds: [],
-			};
-		},
+		(text, index): AcceptanceCriterion => ({
+			id: `${event.taskId}-AC${index + 1}`,
+			text,
+			status: "pending",
+			evidenceIds: [],
+		}),
 	);
 	const planSteps = createPlanSteps(
 		event.taskId,
@@ -188,7 +180,22 @@ function createTask(
 		acceptanceCriteria.map((criterion) => criterion.id),
 		event.createdAt,
 		event.activate ?? true,
+		{ deferStructuralValidation: true },
 	);
+	const issues = collectTaskPlanIssues(event);
+	if (issues.length > 0) {
+		const retryEvent = buildTaskPlanRetryEvent(event, issues);
+		if (retryEvent) {
+			try {
+				createTask(cloneState(state), retryEvent);
+			} catch {
+				throw new TaskTransitionError(formatTaskPlanIssues(issues));
+			}
+			throw new TaskPlanQualityError(formatTaskPlanIssues(issues), retryEvent);
+		}
+		throw new TaskTransitionError(formatTaskPlanIssues(issues));
+	}
+
 	const task: Task = {
 		id: event.taskId,
 		title: event.title,
@@ -597,6 +604,7 @@ function applySnapshot(
 }
 
 interface CreatePlanStepsOptions {
+	deferStructuralValidation?: boolean;
 	parentStepId?: string;
 	parentStatus?: TaskStep["status"];
 	startIndex?: number;
@@ -628,123 +636,23 @@ function createPlanSteps(
 	if (steps.length === 0) {
 		throw new TaskTransitionError("At least one ordered plan step is required");
 	}
-
-	const build = (inputs: TaskStepInput[]) =>
-		inputs.map((step, index) =>
-			createPlanStep(
-				taskId,
-				step,
-				index,
-				criterionIds,
-				createdAt,
-				activate,
-				options,
-			),
-		);
-	const createdSteps = build(steps);
-	const issues = collectPlanStepIssues(createdSteps);
-	if (issues.length === 0) return createdSteps;
-
-	const retryPlanSteps = buildPlanRetrySteps(steps, issues, criterionIds);
-	const repairedSteps = build(retryPlanSteps);
-	if (collectPlanStepIssues(repairedSteps).length > 0) {
-		throw new TaskTransitionError(formatPlanStepIssues(issues, criterionIds));
-	}
-	const firstRetryStep = retryPlanSteps[0] ?? {};
-	throw new TaskPlanQualityError(
-		`${formatPlanStepIssues(issues, criterionIds)}\nRetry payload: ${JSON.stringify(firstRetryStep)}`,
-		retryPlanSteps,
-	);
-}
-
-interface PlanStepIssue {
-	index: number;
-	issue: string;
-}
-
-function collectPlanStepIssues(steps: readonly TaskStep[]): PlanStepIssue[] {
-	const issues: PlanStepIssue[] = [];
-	for (const [index, step] of steps.entries()) {
-		const invalidCriterionLink = step.planQuality.issues.some((issue) =>
-			issue.startsWith("criterionIds includes unknown ID"),
-		);
-		const missingRequiredValue =
-			!step.text.trim() ||
-			!step.expectedOutput.trim() ||
-			!step.granularityCheck.reason.trim();
-		const failsQualityGate =
-			missingRequiredValue ||
-			invalidCriterionLink ||
-			(step.decompositionStatus === "atomic"
-				? step.planQuality.issues.length > 0
-				: step.planQuality.score < MIN_NON_ATOMIC_PLAN_QUALITY_SCORE);
-		if (failsQualityGate) {
-			for (const issue of step.planQuality.issues)
-				issues.push({ index, issue });
-		}
-	}
-	return issues;
-}
-
-function buildPlanRetrySteps(
-	steps: readonly TaskStepInput[],
-	issues: readonly PlanStepIssue[],
-	availableCriterionIds: readonly string[],
-): TaskStepInput[] {
-	const rewrites = new Map<number, Partial<TaskStepInput>>();
-	for (const { index, issue } of issues) {
-		const feedback = getPlanQualityFeedback(issue, availableCriterionIds);
-		rewrites.set(
+	const createdSteps = steps.map((step, index) =>
+		createPlanStep(
+			taskId,
+			step,
 			index,
-			mergePlanStepRewrite(rewrites.get(index), feedback.rewrite),
-		);
-	}
-	return steps.map((step, index) =>
-		mergePlanStepInput(step, rewrites.get(index) ?? {}),
+			criterionIds,
+			createdAt,
+			activate,
+			options,
+		),
 	);
-}
-
-function mergePlanStepRewrite(
-	previous: Partial<TaskStepInput> | undefined,
-	next: Partial<TaskStepInput>,
-): Partial<TaskStepInput> {
-	const previousCheck = previous?.granularityCheck;
-	const nextCheck = next.granularityCheck;
-	return {
-		...previous,
-		...next,
-		...(previousCheck && nextCheck
-			? { granularityCheck: { ...previousCheck, ...nextCheck } }
-			: {}),
-	};
-}
-
-function mergePlanStepInput(
-	step: TaskStepInput,
-	rewrite: Partial<TaskStepInput>,
-): TaskStepInput {
-	const existingCheck = step.granularityCheck;
-	const rewriteCheck = rewrite.granularityCheck;
-	return {
-		...step,
-		...rewrite,
-		...(existingCheck && rewriteCheck
-			? { granularityCheck: { ...existingCheck, ...rewriteCheck } }
-			: {}),
-	};
-}
-
-function formatPlanStepIssues(
-	issues: readonly PlanStepIssue[],
-	availableCriterionIds: readonly string[],
-): string {
-	const messages = issues.map(({ index, issue }) => {
-		const feedback = getPlanQualityFeedback(issue, availableCriterionIds);
-		return `Plan step ${index + 1} failed quality gate:\n- ${feedback.message}`;
-	});
-	return messages.length === 1
-		? (messages[0] ?? "Plan validation failed")
-		: `Plan validation failed:\n- ${messages.join("\n- ")}`;
+	if (!options.deferStructuralValidation) {
+		const issues = collectPlanStepIssues(steps, criterionIds);
+		if (issues.length > 0)
+			throw new TaskTransitionError(formatTaskPlanIssues(issues));
+	}
+	return createdSteps;
 }
 
 function createPlanStep(

@@ -441,6 +441,7 @@ Behavior:
 - assigns the next task ID from successfully persisted tasks so rejected plan attempts do not create invisible ID gaps,
 - converts `initial_steps` or structured `plan_steps` to ordered plan steps,
 - rejects task creation without at least one ordered plan step,
+- on structural rejection, gathers task- and step-level issues and returns one complete corrected `task_plan` call only after validating repairs sourced from the original objective, linked criteria, or same-step text/output; preserves valid fields and omits a duplicate `minimum_params` line,
 - treats steps without an atomic granularity check as requiring breakdown before execution,
 - optionally activates it,
 - if activating, deactivates previous active task by moving it to `pending` unless explicit parallel support exists,
