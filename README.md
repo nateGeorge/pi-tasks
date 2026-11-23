@@ -127,6 +127,7 @@ metadata.
 - Empty or omitted `criterionIds` on new and decomposed steps auto-link the available task criteria; non-empty arrays must contain known generated IDs.
 - Heuristic plan-quality issues are warnings on saved steps; the plan result names each affected step and its concerns. Blank required fields, unknown criterion IDs, and schema errors still reject the plan.
 - Vague-anchor and compound-step checks are hints, not refusals. Dotted initialisms are ignored as file anchors, while one-letter extensions such as `.c`, `.h`, and `.R` remain valid anchors; action-like filename segments such as `fixtures/fix.json` do not count as instructions.
+- A rejected `task_plan` returns one complete corrected call only when the original task and step context can repair every structural issue. Valid fields stay unchanged, task and step issues are collected together, and the full retry is validated before display.
 
 
 ## Completion Gates

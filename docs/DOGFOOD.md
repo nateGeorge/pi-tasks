@@ -8,6 +8,8 @@ Date: 2026-09-06
 
 Result: passed for the scoped MVP dogfood gate, release-hardening dogfood gate, weak-model release gate, installed-package smoke, 0.1.5 receiver-bound append compatibility release gate, 0.2.0 state-event source/resume/fork/live-TTY/manual-compaction/installed-package smoke, 0.2.4 Issue #3 weak-model/Oh My Pi evidence-schema release gate, 0.2.5 Issue #4 superseded-evidence release gate, and 0.2.6 vague-evidence summary release gate.
 
+Historical plan-quality rejection entries below describe pre-D13 behavior and are superseded by the current warning-and-save contract. H5d did not run live Pi dogfood, so no current TUI evidence is claimed.
+
 Environment:
 
 - Extension path: `./index.ts`

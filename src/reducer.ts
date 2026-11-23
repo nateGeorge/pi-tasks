@@ -9,6 +9,7 @@ import {
 	MAX_EVIDENCE_SUMMARY_LENGTH,
 	type PlanQuality,
 	type Task,
+	type TaskCreatedEvent,
 	type TaskEvent,
 	type TaskEvidence,
 	type TaskGranularityCheck,
@@ -17,43 +18,43 @@ import {
 	type TaskStep,
 	type TaskStepInput,
 } from "./model.ts";
+import {
+	buildTaskPlanRetryEvent,
+	collectPlanStepIssues,
+	collectTaskPlanIssues,
+	formatTaskPlanIssues,
+} from "./task-plan-recovery.ts";
 
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
-// This short list favors few false refusals; only these explicit imperatives and their
-// participles can establish a compound step with high confidence.
-const COMPOUND_ACTIONS = [
-	{ imperative: "run", participle: "run" },
-	{ imperative: "push", participle: "pushed" },
-	{ imperative: "merge", participle: "merged" },
-	{ imperative: "deploy", participle: "deployed" },
-	{ imperative: "fix", participle: "fixed" },
-	{ imperative: "add", participle: "added" },
-	{ imperative: "update", participle: "updated" },
-	{ imperative: "write", participle: "written" },
-	{ imperative: "remove", participle: "removed" },
-	{ imperative: "open", participle: "opened" },
-	{ imperative: "close", participle: "closed" },
-	{ imperative: "install", participle: "installed" },
-	{ imperative: "test", participle: "tested" },
-	{ imperative: "build", participle: "built|rebuilt" },
-	{ imperative: "commit", participle: "committed" },
-] as const;
-const COMPOUND_IMPERATIVE = new RegExp(
-	`^(?:${COMPOUND_ACTIONS.map(({ imperative }) => imperative).join("|")})\\b`,
+const COMPOUND_STEP_PATTERNS = [
+	/[;&]/,
+	/(?<![/\\._-])(?:並且|然後|接著|以及|同時|再來)(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
+];
+// A conjunction only means two actions when a second verb follows it. "Extract symbols and
+// line refs" is one action; "Run tests and update docs" is two.
+const COMPOUND_CONJUNCTION =
+	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu;
+const SECOND_VERB_PATTERN =
+	/(?<![/\\._-])\b(?:add|analy[sz]e|apply|assess|build|bump|check|commit|compare|compute|create|delete|deploy|draft|edit|extract|fix|generate|implement|install|land|merge|move|open|publish|record|refactor|release|remove|rename|replace|reproduce|review|rewrite|run|ship|split|test|update|verify|wire|write)\b/iu;
+const SECOND_COMMAND_PATTERN =
+	/^\s*(?:npm|npx|pnpm|yarn|bun|node|python(?:3)?|git|make|cargo|go)\b/iu;
+// A second action is an imperative verb that opens the clause after the conjunction.
+// "and update docs" is two actions; "and a test" names a thing, and "and where the value is
+// written" is a clause whose verb is a participle.
+const SECOND_ACTION_OPENER =
+	/^\s+(?:(?:then|also)\s+)?(?:the|a|an|its|their|your|this|that|where|which|so|but|if)\s+/iu;
+// Participles after a noun can describe a passive outcome; leading participles can also be
+// adjectives in a noun list, so classify the whole phrase before rejecting it.
+const PASSIVE_PARTICIPLE_WORDS =
+	"written|rebuilt|built|done|made|updated|changed|added|removed|created|deleted|tested|verified|fixed|moved|renamed|replaced|extracted|generated|installed|merged|published|recorded|refactored|released|shipped|split|wired|applied|compared|computed|edited|copied|passed|failed";
+const PASSIVE_PARTICIPLE_PATTERN = new RegExp(
+	`^(?:${PASSIVE_PARTICIPLE_WORDS})$`,
 	"iu",
 );
-const COMPOUND_PARTICIPLE_END = new RegExp(
-	`\\b(?:${COMPOUND_ACTIONS.map(({ participle }) => participle).join("|")})[.!?]?$`,
+const PASSIVE_OUTCOME_PATTERN = new RegExp(
+	`^(?:(?:the|a|an|its|their|your|this|that)\\s+)?(?:[\\p{L}\\p{N}_-]+\\s+){1,4}(?:(?:is|are|was|were|has been|have been|had been)\\s+)?(?:${PASSIVE_PARTICIPLE_WORDS})\\b`,
 	"iu",
 );
-const COMPOUND_CLAUSE_SEPARATOR = /\s+(?:and|then)\s+|[;,]/iu;
-const COMMAND_TOKEN =
-	/\b(?:npm|pnpm|yarn|bun)\s+run\s+[\w:-]+(?:\s+--[^\s,;]+)*/giu;
-const PATH_TOKEN =
-	/(?<![\p{L}\p{N}_])[\w.-]+(?:[/\\][\w.-]+)+(?![\p{L}\p{N}_])/giu;
-const FILE_TOKEN =
-	/(?<![\p{L}\p{N}_])[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{1,}\b/giu;
-const DOTTED_INITIALISM = /^(?:[A-Za-z]\.)+[A-Za-z]$/u;
 const VAGUE_PLAN_PATTERNS = [
 	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
@@ -66,7 +67,8 @@ const VAGUE_PLAN_PATTERNS = [
 // A vague verb is only vague when the step names nothing specific: no path, flag, code token or
 // symbol. "Fix the bug" stays rejected; "Fix the pgrep flag check to allow -f alone" is specific.
 const CONCRETE_ANCHORS = [
-	/(?<![\p{L}\p{N}_])[\w.-]+(?:[\\/][\w.-]+)+(?![\p{L}\p{N}_])/u,
+	/(?<![\w.])(?![a-z](?:\.[a-z]){1,3}\b)[\w-]+(?:[\\/][\w.-]+)*\.[a-z]{1,5}\b/i,
+	/\S\/\S/,
 	/--[a-z][\w-]+/i,
 	/(?<![\w-])-[a-z](?![\w-])/i,
 	/`[^`]+`/,
@@ -103,6 +105,16 @@ export class TaskTransitionError extends Error {
 		super(message);
 		this.name = "TaskTransitionError";
 		this.code = code;
+	}
+}
+
+export class TaskPlanQualityError extends TaskTransitionError {
+	readonly retryEvent: TaskCreatedEvent;
+
+	constructor(message: string, retryEvent: TaskCreatedEvent) {
+		super(message);
+		this.name = "TaskPlanQualityError";
+		this.retryEvent = retryEvent;
 	}
 }
 
@@ -154,28 +166,25 @@ function createTask(
 	if (state.tasks[event.taskId]) {
 		throw new TaskTransitionError(`Task ${event.taskId} already exists`);
 	}
-	if (!event.title.trim())
-		throw new TaskTransitionError("Task title is required");
-	if (!event.objective.trim())
-		throw new TaskTransitionError("Task objective is required");
-	if (event.acceptanceCriteria.length === 0) {
-		throw new TaskTransitionError(
-			"At least one acceptance criterion is required",
-		);
+
+	const acceptanceCriteria = createAcceptanceCriteria(
+		event.taskId,
+		event.acceptanceCriteria,
+	);
+	const issues = collectTaskPlanIssues(event);
+	if (issues.length > 0) {
+		const retryEvent = buildTaskPlanRetryEvent(event, issues);
+		if (retryEvent) {
+			try {
+				validateTaskPlanCandidate(retryEvent);
+			} catch {
+				throw new TaskTransitionError(formatTaskPlanIssues(issues));
+			}
+			throw new TaskPlanQualityError(formatTaskPlanIssues(issues), retryEvent);
+		}
+		throw new TaskTransitionError(formatTaskPlanIssues(issues));
 	}
 
-	const acceptanceCriteria = event.acceptanceCriteria.map(
-		(text, index): AcceptanceCriterion => {
-			if (!text.trim())
-				throw new TaskTransitionError("Acceptance criteria cannot be blank");
-			return {
-				id: `${event.taskId}-AC${index + 1}`,
-				text,
-				status: "pending",
-				evidenceIds: [],
-			};
-		},
-	);
 	const planSteps = createPlanSteps(
 		event.taskId,
 		event.planSteps,
@@ -183,6 +192,7 @@ function createTask(
 		acceptanceCriteria.map((criterion) => criterion.id),
 		event.createdAt,
 		event.activate ?? true,
+		{ deferStructuralValidation: true },
 	);
 	const task: Task = {
 		id: event.taskId,
@@ -219,6 +229,41 @@ function createTask(
 	state.tasks[task.id] = task;
 	if (event.activate) state.activeTaskId = task.id;
 	return state;
+}
+
+function createAcceptanceCriteria(
+	taskId: string,
+	texts: readonly string[],
+): AcceptanceCriterion[] {
+	return texts.map(
+		(text, index): AcceptanceCriterion => ({
+			id: `${taskId}-AC${index + 1}`,
+			text,
+			status: "pending",
+			evidenceIds: [],
+		}),
+	);
+}
+
+function validateTaskPlanCandidate(
+	event: Extract<TaskEvent, { type: "task.created" }>,
+): void {
+	const issues = collectTaskPlanIssues(event);
+	if (issues.length > 0)
+		throw new TaskTransitionError(formatTaskPlanIssues(issues));
+	const acceptanceCriteria = createAcceptanceCriteria(
+		event.taskId,
+		event.acceptanceCriteria,
+	);
+	createPlanSteps(
+		event.taskId,
+		event.planSteps,
+		event.initialSteps,
+		acceptanceCriteria.map((criterion) => criterion.id),
+		event.createdAt,
+		event.activate ?? true,
+		{ deferStructuralValidation: true },
+	);
 }
 
 function decomposeStep(
@@ -592,6 +637,7 @@ function applySnapshot(
 }
 
 interface CreatePlanStepsOptions {
+	deferStructuralValidation?: boolean;
 	parentStepId?: string;
 	parentStatus?: TaskStep["status"];
 	startIndex?: number;
@@ -623,39 +669,21 @@ function createPlanSteps(
 	if (steps.length === 0) {
 		throw new TaskTransitionError("At least one ordered plan step is required");
 	}
-
-	const createdSteps: TaskStep[] = [];
-	const validationErrors: string[] = [];
-	for (const [index, step] of steps.entries()) {
-		try {
-			createdSteps.push(
-				createPlanStep(
-					taskId,
-					step,
-					index,
-					criterionIds,
-					createdAt,
-					activate,
-					options,
-				),
-			);
-		} catch (error) {
-			if (!(error instanceof TaskTransitionError)) throw error;
-			const prefix = `Plan step ${index + 1}`;
-			validationErrors.push(
-				error.message.startsWith(prefix)
-					? error.message
-					: `${prefix}: ${error.message}`,
-			);
-		}
-	}
-	if (validationErrors.length === 1) {
-		throw new TaskTransitionError(validationErrors.join(""));
-	}
-	if (validationErrors.length > 1) {
-		throw new TaskTransitionError(
-			`Plan validation failed:\n- ${validationErrors.join("\n- ")}`,
-		);
+	const createdSteps = steps.map((step, index) =>
+		createPlanStep(
+			taskId,
+			step,
+			index,
+			criterionIds,
+			createdAt,
+			activate,
+			options,
+		),
+	);
+	if (!options.deferStructuralValidation) {
+		const issues = collectPlanStepIssues(steps, criterionIds);
+		if (issues.length > 0)
+			throw new TaskTransitionError(formatTaskPlanIssues(issues));
 	}
 	return createdSteps;
 }
@@ -671,22 +699,19 @@ function createPlanStep(
 ): TaskStep {
 	const text = step.text.trim();
 	const expectedOutput = step.expectedOutput.trim();
-	if (!text) throw new TaskTransitionError("Plan steps cannot be blank");
-	if (!expectedOutput) {
-		throw new TaskTransitionError("Plan step expectedOutput is required");
-	}
-	const linkedCriteria = unique(
+	const requestedCriteria = unique(
 		step.criterionIds && step.criterionIds.length > 0
 			? step.criterionIds
 			: criterionIds,
 	);
-	for (const criterionId of linkedCriteria) {
-		if (!criterionIds.includes(criterionId)) {
-			throw new TaskTransitionError(
-				`Plan step references unknown criterion ${criterionId}`,
-			);
-		}
-	}
+	const invalidCriterionIds = requestedCriteria.filter(
+		(criterionId) => !criterionIds.includes(criterionId),
+	);
+	const validRequestedCriteria = requestedCriteria.filter((criterionId) =>
+		criterionIds.includes(criterionId),
+	);
+	const linkedCriteria =
+		validRequestedCriteria.length > 0 ? validRequestedCriteria : criterionIds;
 	const granularityCheck = normalizeGranularityCheck(step);
 	const decompositionStatus =
 		step.decompositionStatus ??
@@ -695,12 +720,12 @@ function createPlanStep(
 		text,
 		expectedOutput,
 		criterionIds: linkedCriteria,
+		invalidCriterionIds,
 		evidenceRequired: step.evidenceRequired ?? true,
 		allowedActions: step.allowedActions ?? [],
 		decompositionStatus,
 		granularityCheck,
 	});
-	validateGranularityContract(granularityCheck, index);
 	const status =
 		index === 0 && (activate || options.parentStatus)
 			? (options.parentStatus ?? "active")
@@ -733,6 +758,7 @@ function assessPlanQuality(step: {
 	text: string;
 	expectedOutput: string;
 	criterionIds: string[];
+	invalidCriterionIds: string[];
 	evidenceRequired: boolean;
 	allowedActions: string[];
 	decompositionStatus: TaskStep["decompositionStatus"];
@@ -742,6 +768,8 @@ function assessPlanQuality(step: {
 	if (step.text.length < 8) issues.push("step text is too short");
 	if (step.expectedOutput.length < 12)
 		issues.push("expected output is too short");
+	if (!step.granularityCheck.reason.trim())
+		issues.push("granularityCheck.reason is required");
 	const textVagueMatch = findPatternMatch(step.text, VAGUE_PLAN_PATTERNS);
 	if (textVagueMatch && !hasConcreteAnchor(step.text)) {
 		issues.push(
@@ -768,20 +796,28 @@ function assessPlanQuality(step: {
 			`allowedActions contain vague actions (${JSON.stringify(actionVagueMatch)})`,
 		);
 	}
-	const textCompoundMatch = findCompoundClause(step.text);
+	const textCompoundMatch =
+		findPatternMatch(step.text, COMPOUND_STEP_PATTERNS) ??
+		findCompoundClause(step.text);
 	if (textCompoundMatch) {
 		issues.push(
 			`step text appears to contain multiple actions (${JSON.stringify(textCompoundMatch)})`,
 		);
 	}
-	const outputCompoundMatch = findCompoundClause(step.expectedOutput);
+	const outputCompoundMatch =
+		findPatternMatch(step.expectedOutput, COMPOUND_STEP_PATTERNS) ??
+		findCompoundClause(step.expectedOutput);
 	if (outputCompoundMatch) {
 		issues.push(
 			`expected output appears to contain multiple outputs (${JSON.stringify(outputCompoundMatch)})`,
 		);
 	}
 	const actionCompoundMatch = step.allowedActions
-		.map((action) => findCompoundClause(action))
+		.map(
+			(action) =>
+				findPatternMatch(action, COMPOUND_STEP_PATTERNS) ??
+				findCompoundClause(action),
+		)
 		.find((match) => match !== undefined);
 	if (actionCompoundMatch) {
 		issues.push(
@@ -790,6 +826,11 @@ function assessPlanQuality(step: {
 	}
 	if (step.criterionIds.length === 0)
 		issues.push("at least one criterion link is required");
+	for (const criterionId of step.invalidCriterionIds) {
+		issues.push(
+			`criterionIds includes unknown ID ${JSON.stringify(criterionId)}`,
+		);
+	}
 	if (!step.evidenceRequired) issues.push("evidenceRequired must be true");
 	if (
 		step.decompositionStatus === "atomic" &&
@@ -808,38 +849,41 @@ function assessPlanQuality(step: {
 }
 
 function hasConcreteAnchor(value: string): boolean {
-	const hasFileAnchor = [...value.matchAll(FILE_TOKEN)].some(
-		([candidate]) =>
-			candidate !== undefined && !DOTTED_INITIALISM.test(candidate),
-	);
-	return (
-		hasFileAnchor || CONCRETE_ANCHORS.some((pattern) => pattern.test(value))
-	);
+	return CONCRETE_ANCHORS.some((pattern) => pattern.test(value));
 }
 function findCompoundClause(value: string): string | undefined {
-	const normalized = value
-		.replace(/`[^`]*`/gu, " TOKEN ")
-		.replace(COMMAND_TOKEN, " TOKEN ")
-		.replace(PATH_TOKEN, " TOKEN ")
-		.replace(FILE_TOKEN, " TOKEN ");
-	const clauses = normalized
-		.split(COMPOUND_CLAUSE_SEPARATOR)
-		.map((clause) => clause.trim().replace(/^(?:(?:and|then)\s+)+/iu, ""));
-	const separators = [
-		...normalized.matchAll(new RegExp(COMPOUND_CLAUSE_SEPARATOR.source, "giu")),
-	];
-	for (let index = 0; index < clauses.length - 1; index += 1) {
-		const left = clauses[index] ?? "";
-		const right = clauses[index + 1] ?? "";
-		if (
-			(COMPOUND_IMPERATIVE.test(left) && COMPOUND_IMPERATIVE.test(right)) ||
-			(COMPOUND_PARTICIPLE_END.test(left) &&
-				COMPOUND_PARTICIPLE_END.test(right))
-		) {
-			return separators[index]?.[0].trim() ?? "compound clause";
-		}
+	const conjunctionPattern = new RegExp(
+		COMPOUND_CONJUNCTION.source,
+		`${COMPOUND_CONJUNCTION.flags}g`,
+	);
+	const matches = [...value.matchAll(conjunctionPattern)];
+	for (const [index, match] of matches.entries()) {
+		const start = (match.index ?? 0) + match[0].length;
+		const next = matches[index + 1];
+		const end = next?.index ?? value.length;
+		const rest = value.slice(start, end);
+		if (/^\s*(?:where|which)\b/iu.test(rest)) continue;
+		if (hasPassiveOutcome(rest)) return match[0];
+		// "and a test" names a thing, and "and where the value is written" opens a
+		// subordinate clause; neither is a second action.
+		if (SECOND_ACTION_OPENER.test(rest)) continue;
+		const opener = rest.trimStart().split(/[\s,;]/u)[0] ?? "";
+		if (SECOND_VERB_PATTERN.test(opener) || SECOND_COMMAND_PATTERN.test(rest))
+			return match[0];
 	}
 	return undefined;
+}
+
+function hasPassiveOutcome(rest: string): boolean {
+	const clause = rest.trim();
+	if (!clause) return false;
+	const firstWords = clause.split(/[\s,;]/u);
+	if (PASSIVE_PARTICIPLE_PATTERN.test(firstWords[0] ?? "")) {
+		return /^(?:the|a|an|its|their|your|this|that)\b/iu.test(
+			firstWords[1] ?? "",
+		);
+	}
+	return PASSIVE_OUTCOME_PATTERN.test(clause);
 }
 function findPatternMatch(
 	value: string,
@@ -886,17 +930,6 @@ function normalizeGranularityCheck(step: TaskStepInput): TaskGranularityCheck {
 		hasSingleVerificationMethod: false,
 		hasNoHiddenSubtasks: false,
 	};
-}
-
-function validateGranularityContract(
-	granularityCheck: TaskGranularityCheck,
-	index: number,
-): void {
-	if (!granularityCheck.reason.trim()) {
-		throw new TaskTransitionError(
-			`Plan step ${index + 1} granularityCheck.reason is required`,
-		);
-	}
 }
 
 function updatePlanStep(
