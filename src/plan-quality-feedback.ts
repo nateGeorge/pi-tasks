@@ -113,6 +113,15 @@ function getPlanQualityGuidance(
 	issue: string,
 	availableCriterionIds: readonly string[],
 ): PlanQualityGuidance {
+	if (issue.startsWith("criterionIds includes unknown ID")) {
+		return {
+			rule: "Use generated acceptance-criterion IDs or omit criterionIds to auto-link them.",
+			rewrite:
+				availableCriterionIds.length > 0
+					? { criterionIds: [...availableCriterionIds] }
+					: {},
+		};
+	}
 	if (issue.startsWith("expected output appears to contain multiple outputs")) {
 		const separator = issue.match(/\((.+)\)$/)?.[1] ?? "unknown";
 		return {
