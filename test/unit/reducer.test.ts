@@ -242,6 +242,20 @@ describe("plan quality warnings and structural validation", () => {
 		expect(state.tasks.T1?.planSteps[0]?.text).toBe(text);
 	});
 
+	it("warns about sequential npm commands without rejecting the plan", () => {
+		const state = apply([
+			{
+				...created(),
+				planSteps: [planStep({ text: "Run npm test and npm run build" })],
+			},
+		]);
+		const step = state.tasks.T1?.planSteps[0];
+		expect(step?.text).toBe("Run npm test and npm run build");
+		expect(step?.planQuality.issues).toContainEqual(
+			expect.stringContaining("step text appears to contain multiple actions"),
+		);
+	});
+
 	it.each(["parser.c", "parser.h", "parser.R"])(
 		"recognizes one-letter source extension %s as an anchor",
 		(filename) => {

@@ -24,11 +24,7 @@ import type {
 	ToolDefinition,
 	ToolResult,
 } from "./pi-types.ts";
-import {
-	reduceTaskState,
-	TaskPlanQualityError,
-	TaskTransitionError,
-} from "./reducer.ts";
+import { TaskPlanQualityError, TaskTransitionError } from "./reducer.ts";
 import {
 	buildTaskResume,
 	formatTaskFocus,
@@ -1054,7 +1050,7 @@ function planQualityWarnings(event: TaskEvent, state: TaskState): string[] {
 	return affectedSteps.flatMap((step) =>
 		step.planQuality.issues.length > 0
 			? [
-					`Warning: plan step ${step.id} (${step.text}) saved with quality concerns: ${step.planQuality.issues.join("; ")}`,
+					`Warning: plan step ${step.id} (${step.text.replace(/\r\n|\r|\n/gu, "\\n")}) saved with quality concerns: ${step.planQuality.issues.join("; ")}`,
 				]
 			: [],
 	);
@@ -1067,7 +1063,7 @@ function buildRejectionRecovery(
 ) {
 	const resume = buildTaskResume(state);
 	const retryExample = buildEvidenceRetryExample(event);
-	const planRecovery = buildTaskPlanRecovery(error, state);
+	const planRecovery = buildTaskPlanRecovery(error);
 	const scopeRecovery = buildScopeUpdateRecovery(error, event);
 	return {
 		rejected: true,
@@ -1098,14 +1094,8 @@ function getToolRejectionReason(error: unknown): string {
 
 function buildTaskPlanRecovery(
 	error: unknown,
-	state: TaskState,
 ): { retry_with: "task_plan"; minimum_params: TaskPlanParams } | undefined {
 	if (!(error instanceof TaskPlanQualityError)) return undefined;
-	try {
-		reduceTaskState(state, error.retryEvent);
-	} catch {
-		return undefined;
-	}
 	const event = error.retryEvent;
 	return {
 		retry_with: "task_plan",

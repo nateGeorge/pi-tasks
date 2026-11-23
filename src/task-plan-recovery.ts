@@ -1,7 +1,11 @@
 import type { TaskCreatedEvent, TaskStepInput } from "./model.ts";
 
 export type TaskPlanIssue =
-	| { target: "task"; field: "title" | "objective"; message: string }
+	| {
+			target: "task";
+			field: "title" | "objective" | "planSteps";
+			message: string;
+	  }
 	| {
 			target: "task";
 			field: "acceptanceCriteria";
@@ -48,12 +52,26 @@ export function collectTaskPlanIssues(
 			});
 	}
 	if (event.planSteps) {
-		issues.push(
-			...collectPlanStepIssues(
-				event.planSteps,
-				criterionIds(event.taskId, event.acceptanceCriteria.length),
-			),
-		);
+		if (event.planSteps.length === 0) {
+			issues.push({
+				target: "task",
+				field: "planSteps",
+				message: "At least one ordered plan step is required",
+			});
+		} else {
+			issues.push(
+				...collectPlanStepIssues(
+					event.planSteps,
+					criterionIds(event.taskId, event.acceptanceCriteria.length),
+				),
+			);
+		}
+	} else if ((event.initialSteps ?? []).length === 0) {
+		issues.push({
+			target: "task",
+			field: "planSteps",
+			message: "At least one ordered plan step is required",
+		});
 	} else {
 		issues.push(...collectInitialStepIssues(event.initialSteps ?? []));
 	}
@@ -123,19 +141,40 @@ export function buildTaskPlanRetryEvent(
 		acceptanceCriteria,
 	};
 	if (event.planSteps) {
+		const steps: TaskStepInput[] =
+			event.planSteps.length > 0
+				? [...event.planSteps]
+				: (event.initialSteps ?? [])
+						.filter((text) => text.trim())
+						.map((text) => ({
+							text,
+							expectedOutput: `Verified output for: ${text}`,
+							criterionIds: criterionIds(
+								event.taskId,
+								acceptanceCriteria.length,
+							),
+						}));
+		if (steps.length === 0 && fallback) {
+			steps.push({
+				text: `Verify ${fallback}`,
+				expectedOutput: `Result of: ${fallback}`,
+				criterionIds: criterionIds(event.taskId, acceptanceCriteria.length),
+			});
+		}
 		retryEvent.planSteps = repairPlanSteps(
 			event,
-			event.planSteps,
+			steps,
 			issues,
 			acceptanceCriteria,
 			fallback,
 		);
 	} else if (event.initialSteps) {
-		retryEvent.initialSteps = repairInitialSteps(
-			event.initialSteps,
-			issues,
-			fallback,
-		);
+		retryEvent.initialSteps =
+			event.initialSteps.length > 0
+				? repairInitialSteps(event.initialSteps, issues, fallback)
+				: fallback
+					? [`Verify ${fallback}`]
+					: event.initialSteps;
 	}
 	return retryEvent;
 }
@@ -144,7 +183,11 @@ function taskFallback(event: TaskCreatedEvent): string | undefined {
 	return (
 		(event.objective.trim() ? event.objective : undefined) ??
 		(event.title.trim() ? event.title : undefined) ??
-		event.acceptanceCriteria.find((criterion) => criterion.trim())
+		event.acceptanceCriteria.find((criterion) => criterion.trim()) ??
+		event.planSteps?.find((step) => step.text.trim())?.text ??
+		event.planSteps?.find((step) => step.expectedOutput.trim())
+			?.expectedOutput ??
+		event.initialSteps?.find((step) => step.trim())
 	);
 }
 

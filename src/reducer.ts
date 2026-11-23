@@ -36,6 +36,8 @@ const COMPOUND_CONJUNCTION =
 	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu;
 const SECOND_VERB_PATTERN =
 	/(?<![/\\._-])\b(?:add|analy[sz]e|apply|assess|build|bump|check|commit|compare|compute|create|delete|deploy|draft|edit|extract|fix|generate|implement|install|land|merge|move|open|publish|record|refactor|release|remove|rename|replace|reproduce|review|rewrite|run|ship|split|test|update|verify|wire|write)\b/iu;
+const SECOND_COMMAND_PATTERN =
+	/^\s*(?:npm|npx|pnpm|yarn|bun|node|python(?:3)?|git|make|cargo|go)\b/iu;
 // A second action is an imperative verb that opens the clause after the conjunction.
 // "and update docs" is two actions; "and a test" names a thing, and "and where the value is
 // written" is a clause whose verb is a participle.
@@ -165,14 +167,24 @@ function createTask(
 		throw new TaskTransitionError(`Task ${event.taskId} already exists`);
 	}
 
-	const acceptanceCriteria = event.acceptanceCriteria.map(
-		(text, index): AcceptanceCriterion => ({
-			id: `${event.taskId}-AC${index + 1}`,
-			text,
-			status: "pending",
-			evidenceIds: [],
-		}),
+	const acceptanceCriteria = createAcceptanceCriteria(
+		event.taskId,
+		event.acceptanceCriteria,
 	);
+	const issues = collectTaskPlanIssues(event);
+	if (issues.length > 0) {
+		const retryEvent = buildTaskPlanRetryEvent(event, issues);
+		if (retryEvent) {
+			try {
+				validateTaskPlanCandidate(retryEvent);
+			} catch {
+				throw new TaskTransitionError(formatTaskPlanIssues(issues));
+			}
+			throw new TaskPlanQualityError(formatTaskPlanIssues(issues), retryEvent);
+		}
+		throw new TaskTransitionError(formatTaskPlanIssues(issues));
+	}
+
 	const planSteps = createPlanSteps(
 		event.taskId,
 		event.planSteps,
@@ -182,20 +194,6 @@ function createTask(
 		event.activate ?? true,
 		{ deferStructuralValidation: true },
 	);
-	const issues = collectTaskPlanIssues(event);
-	if (issues.length > 0) {
-		const retryEvent = buildTaskPlanRetryEvent(event, issues);
-		if (retryEvent) {
-			try {
-				createTask(cloneState(state), retryEvent);
-			} catch {
-				throw new TaskTransitionError(formatTaskPlanIssues(issues));
-			}
-			throw new TaskPlanQualityError(formatTaskPlanIssues(issues), retryEvent);
-		}
-		throw new TaskTransitionError(formatTaskPlanIssues(issues));
-	}
-
 	const task: Task = {
 		id: event.taskId,
 		title: event.title,
@@ -231,6 +229,41 @@ function createTask(
 	state.tasks[task.id] = task;
 	if (event.activate) state.activeTaskId = task.id;
 	return state;
+}
+
+function createAcceptanceCriteria(
+	taskId: string,
+	texts: readonly string[],
+): AcceptanceCriterion[] {
+	return texts.map(
+		(text, index): AcceptanceCriterion => ({
+			id: `${taskId}-AC${index + 1}`,
+			text,
+			status: "pending",
+			evidenceIds: [],
+		}),
+	);
+}
+
+function validateTaskPlanCandidate(
+	event: Extract<TaskEvent, { type: "task.created" }>,
+): void {
+	const issues = collectTaskPlanIssues(event);
+	if (issues.length > 0)
+		throw new TaskTransitionError(formatTaskPlanIssues(issues));
+	const acceptanceCriteria = createAcceptanceCriteria(
+		event.taskId,
+		event.acceptanceCriteria,
+	);
+	createPlanSteps(
+		event.taskId,
+		event.planSteps,
+		event.initialSteps,
+		acceptanceCriteria.map((criterion) => criterion.id),
+		event.createdAt,
+		event.activate ?? true,
+		{ deferStructuralValidation: true },
+	);
 }
 
 function decomposeStep(
@@ -835,7 +868,8 @@ function findCompoundClause(value: string): string | undefined {
 		// subordinate clause; neither is a second action.
 		if (SECOND_ACTION_OPENER.test(rest)) continue;
 		const opener = rest.trimStart().split(/[\s,;]/u)[0] ?? "";
-		if (SECOND_VERB_PATTERN.test(opener)) return match[0];
+		if (SECOND_VERB_PATTERN.test(opener) || SECOND_COMMAND_PATTERN.test(rest))
+			return match[0];
 	}
 	return undefined;
 }

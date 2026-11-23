@@ -666,6 +666,112 @@ describe("registered task tools", () => {
 		).toBeGreaterThan(0);
 	});
 
+	it("recovers an empty plan_steps array with one successful first retry", async () => {
+		const { tools, ctx, store } = createHarness();
+		const plan = requireTool(tools, "task_plan");
+		const params = {
+			title: "Empty plan recovery",
+			objective: "Restore task plan creation from an empty plan",
+			acceptance_criteria: ["The corrected plan can be created"],
+			plan_steps: [],
+			priority: "high",
+			tags: ["preserve-tag"],
+		};
+		const rejected = await execute(plan, params, ctx);
+		const text = rejected.content[0]?.text ?? "";
+		expect(rejected.isError).toBe(true);
+		expect(text).toContain("At least one ordered plan step is required");
+		expect(text.match(/Retry payload:/gu)).toHaveLength(1);
+		const payloadMatch = text.match(
+			/Retry payload:\n```json\n([\s\S]+)\n```$/u,
+		);
+		expect(payloadMatch).not.toBeNull();
+		const retryParams = JSON.parse(payloadMatch?.[1] ?? "null") as Record<
+			string,
+			unknown
+		>;
+		expect(retryParams).toMatchObject({
+			title: params.title,
+			objective: params.objective,
+			acceptance_criteria: params.acceptance_criteria,
+			priority: params.priority,
+			tags: params.tags,
+		});
+		expect(retryParams.plan_steps).toMatchObject([
+			{
+				text: `Verify ${params.objective}`,
+				expectedOutput: `Result of: ${params.objective}`,
+				criterionIds: ["T1-AC1"],
+			},
+		]);
+		const retried = await execute(plan, retryParams, ctx);
+		expect(retried.isError).toBeUndefined();
+		expect(store.getState().tasks.T1?.planSteps).toHaveLength(1);
+	});
+
+	it("uses valid step work as the last recovery fallback for blank task metadata", async () => {
+		const { tools, ctx, store } = createHarness();
+		const plan = requireTool(tools, "task_plan");
+		const params = {
+			title: " ",
+			objective: " ",
+			acceptance_criteria: [],
+			plan_steps: [
+				{
+					text: "Read src/csv.c",
+					expectedOutput: "CSV rows retain parsed values",
+				},
+			],
+		};
+		const rejected = await execute(plan, params, ctx);
+		const text = rejected.content[0]?.text ?? "";
+		expect(rejected.isError).toBe(true);
+		expect(text.match(/Retry payload:/gu)).toHaveLength(1);
+		const payloadMatch = text.match(
+			/Retry payload:\n```json\n([\s\S]+)\n```$/u,
+		);
+		expect(payloadMatch).not.toBeNull();
+		const retryParams = JSON.parse(payloadMatch?.[1] ?? "null") as Record<
+			string,
+			unknown
+		>;
+		expect(retryParams).toMatchObject({
+			title: "Read src/csv.c",
+			objective: "Read src/csv.c",
+			acceptance_criteria: ["Read src/csv.c"],
+		});
+		const retried = await execute(plan, retryParams, ctx);
+		expect(retried.isError).toBeUndefined();
+		expect(store.getState().tasks.T1?.planSteps[0]?.text).toBe(
+			"Read src/csv.c",
+		);
+	});
+
+	it("escapes line breaks in plan warning labels without changing stored text", async () => {
+		const { tools, ctx, store } = createHarness();
+		const plan = requireTool(tools, "task_plan");
+		const stepText = "Do\nit";
+		const result = await execute(
+			plan,
+			{
+				title: "Multiline warning",
+				objective: "Save a multiline plan step",
+				acceptance_criteria: ["The step text is unchanged"],
+				plan_steps: [
+					{
+						text: stepText,
+						expectedOutput: "One observable result for the saved step",
+					},
+				],
+			},
+			ctx,
+		);
+		const text = result.content[0]?.text ?? "";
+		expect(text).toContain("Warning: plan step T1-S1 (Do\\nit) saved");
+		expect(text).not.toContain("Warning: plan step T1-S1 (Do\nit) saved");
+		expect(store.getState().tasks.T1?.planSteps[0]?.text).toBe(stepText);
+	});
+
 	it.each([false, true])(
 		"repairs task and step issues into one validated task_plan call with active task=%s",
 		async (hasActiveTask) => {
