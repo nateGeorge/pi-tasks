@@ -697,6 +697,8 @@ describe("registered task tools", () => {
 			ctx,
 		);
 		expect(rejected.content[0]?.text).toContain("Error:");
+		expect(rejected.content[0]?.text).toContain("Rule: ");
+		expect(rejected.content[0]?.text).toContain("Example rewrite: ");
 		expect(Object.keys(store.getState().tasks)).toEqual([]);
 
 		const created = await execute(
